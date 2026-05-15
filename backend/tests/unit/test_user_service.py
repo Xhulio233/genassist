@@ -7,9 +7,27 @@ import os
 from app.schemas.filter import BaseFilterModel
 from app.services.users import UserService
 from app.repositories.users import UserRepository
+from pydantic import ValidationError
+
 from app.schemas.user import UserCreate, UserRead, UserTypeRead, UserUpdate
 from app.core.exceptions.error_messages import ErrorKey
 from app.core.exceptions.exception_classes import AppException
+
+
+def test_user_update_rejects_empty_role_ids():
+    with pytest.raises(ValidationError):
+        UserUpdate(role_ids=[])
+
+
+def test_user_create_rejects_empty_role_ids():
+    with pytest.raises(ValidationError):
+        UserCreate(
+            username="testuser12",
+            email="test@example.com",
+            password="password1",
+            user_type_id=uuid4(),
+            role_ids=[],
+        )
 
 # Test-only credentials - these are intentionally simple for unit testing
 # and are never used in production. They can be overridden via environment variables.

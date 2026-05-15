@@ -40,6 +40,8 @@ interface UserDialogProps {
   mode?: "create" | "edit";
 }
 
+const NO_GROUP_VALUE = "none";
+
 export function UserDialog({
   isOpen,
   onOpenChange,
@@ -138,12 +140,6 @@ export function UserDialog({
       );
     }
 
-    if (dialogMode !== "create") {
-      requiredFields = requiredFields.filter(
-        (field) => field.label !== "Roles"
-      );
-    }
-
     const missingFields = requiredFields
       .filter((field) => field.isEmpty)
       .map((field) => field.label);
@@ -218,6 +214,8 @@ export function UserDialog({
       if (error.status === 400) {
         if (data?.error_key === 'EMAIL_ALREADY_EXISTS') {
           errorMessage = "A user with this email already exists.";
+        } else if (data?.error_key === 'USER_MUST_HAVE_ROLE') {
+          errorMessage = "A user must have at least one role.";
         } else {
           errorMessage = "A user with this username already exists.";
         }
@@ -271,9 +269,15 @@ export function UserDialog({
     );
   }, [roles, selectedRoleIds]);
 
-  useEffect(() => {
-    setSupervisedGroupIds((prev) => prev.filter((id) => id !== groupId));
-  }, [groupId]);
+  const handleGroupChange = (value: string) => {
+    const nextGroupId = value === NO_GROUP_VALUE ? "" : value;
+    setGroupId(nextGroupId);
+    if (!nextGroupId) {
+      setSupervisedGroupIds([]);
+    } else {
+      setSupervisedGroupIds((prev) => prev.filter((id) => id !== nextGroupId));
+    }
+  };
 
   if (isLoading) {
     return (
@@ -412,11 +416,15 @@ export function UserDialog({
             {userGroups.length > 0 && (
               <div className="space-y-2">
                 <Label htmlFor="group">Group</Label>
-                <Select value={groupId} onValueChange={setGroupId}>
+                <Select
+                  value={groupId || NO_GROUP_VALUE}
+                  onValueChange={handleGroupChange}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select group (optional)" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={NO_GROUP_VALUE}>No group</SelectItem>
                     {userGroups.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
                         {g.name}

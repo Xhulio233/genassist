@@ -1,5 +1,5 @@
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, constr, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, constr, ConfigDict, field_validator
 from typing import Optional
 from typing import Annotated
 from datetime import datetime
@@ -44,7 +44,7 @@ class UserBase(BaseModel):
 
 # Used for user creation (excludes ID, timestamps)
 class UserCreate(UserBase):
-    role_ids: list[UUID] = Field(..., description="Roles IDs")
+    role_ids: list[UUID] = Field(..., min_length=1, description="Roles IDs")
     user_type_id: UUID
     group_id: UUID | None = None
 
@@ -83,5 +83,12 @@ class UserUpdate(BaseModel):
     role_ids: list[UUID] | None = None
     notes: str | None = None
     group_id: UUID | None = None
+
+    @field_validator("role_ids")
+    @classmethod
+    def role_ids_must_not_be_empty(cls, value: list[UUID] | None) -> list[UUID] | None:
+        if value is not None and len(value) == 0:
+            raise ValueError("At least one role is required.")
+        return value
 
 

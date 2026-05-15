@@ -56,6 +56,9 @@ class UserRepository:
         self.db.add(new_user)
         await self.db.flush()
 
+        if not user.role_ids:
+            raise AppException(error_key=ErrorKey.USER_MUST_HAVE_ROLE, status_code=400)
+
         # Create UserRole objects for each role ID
         for role_id in user.role_ids:
             user_role = UserRoleModel(user_id=new_user.id, role_id=role_id)
@@ -185,6 +188,8 @@ class UserRepository:
 
         # Update roles
         if data.role_ids is not None:
+            if not data.role_ids:
+                raise AppException(error_key=ErrorKey.USER_MUST_HAVE_ROLE, status_code=400)
             await self.db.execute(
                     delete(UserRoleModel).where(UserRoleModel.user_id == user.id)
                     )
