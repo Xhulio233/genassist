@@ -4442,6 +4442,50 @@
         }
       }
     },
+    "/api/dashboard/notifications/mark-read": {
+      "post": {
+        "tags": [
+          "v1",
+          "Dashboard"
+        ],
+        "summary": "Mark notifications as read",
+        "description": "Persists read state for notification feed items for the current user.",
+        "operationId": "mark_notification_feed_read_api_dashboard_notifications_mark_read_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationMarkReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
     "/api/datasources": {
       "get": {
         "tags": [
@@ -7921,7 +7965,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Tenant-ID",
+            "name": "x-tenant-id",
             "in": "header",
             "required": false,
             "schema": {
@@ -30244,6 +30288,11 @@
               }
             ],
             "title": "Group Id"
+          },
+          "read": {
+            "type": "boolean",
+            "title": "Read",
+            "default": false
           }
         },
         "type": "object",
@@ -30256,6 +30305,22 @@
           "action_url"
         ],
         "title": "NotificationItem"
+      },
+      "NotificationMarkReadRequest": {
+        "properties": {
+          "notification_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Notification Ids",
+            "description": "Stable notification ids from the feed (e.g. conversation_started:<uuid>)."
+          }
+        },
+        "type": "object",
+        "title": "NotificationMarkReadRequest",
+        "description": "Mark dashboard notification feed rows as read for the current user."
       },
       "NotificationTypeTargetingRead": {
         "properties": {

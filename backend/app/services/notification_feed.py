@@ -101,7 +101,19 @@ class NotificationFeedService:
         all_items.sort(key=lambda item: item.timestamp, reverse=True)
         page = all_items[skip : skip + limit]
         has_more = len(all_items) > skip + limit
-        return page, has_more
+        read_type_keys = await self._notification_repo.notification_type_keys_marked_read(
+            user_id
+        )
+        page_with_read = [
+            item.model_copy(
+                update={
+                    "read": NotificationRepository.type_key_for_notification_id(item.id)
+                    in read_type_keys
+                }
+            )
+            for item in page
+        ]
+        return page_with_read, has_more
 
     async def _conversation_started_notifications(self, limit: int) -> list[NotificationItem]:
         stmt = (

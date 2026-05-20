@@ -4,6 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi_injector import Injected
+from starlette.responses import Response
 
 from app.auth.dependencies import auth, permissions
 from app.core.exceptions.error_messages import ErrorKey
@@ -16,7 +17,8 @@ from app.schemas.dashboard import (
     DashboardSummaryStats,
     IntegrationsResponse,
 )
-from app.schemas.notification import NotificationFeedResponse
+from app.repositories.notification import NotificationRepository
+from app.schemas.notification import NotificationFeedResponse, NotificationMarkReadRequest
 from app.services.dashboard import DashboardService
 from app.services.notification_feed import NotificationFeedService
 
@@ -230,3 +232,32 @@ async def get_notifications(
         notification_type=notification_type,
     )
     return NotificationFeedResponse(items=items, has_more=has_more)
+
+
+@router.post(
+    "/notifications/mark-read",
+    status_code=204,
+    dependencies=[
+        Depends(auth),
+        Depends(permissions(P.Dashboard.READ)),
+    ],
+    summary="Mark notifications as read",
+    description="Persists read state for notification feed items for the current user.",
+)
+async def mark_notification_feed_read(
+    request: Request,
+    body: NotificationMarkReadRequest,
+    notification_repository: NotificationRepository = Injected(NotificationRepository),
+) -> Response:
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise AppException(status_code=401, error_key=ErrorKey.NOT_AUTHENTICATED)
+    user = request.state.user
+    gid = getattr(user, "group_id", None)
+    supervised = list(getattr(user, "supervised_group_ids", None) or [])
+    await notification_repository.mark_notifications_read(
+        user.id,
+        body.notification_ids,
+        user_group_id=gid,
+        supervised_group_ids=supervised,
+    )
+    return Response(status_code=204)

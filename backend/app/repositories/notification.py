@@ -1,14 +1,18 @@
 from collections import defaultdict
+from typing import ClassVar
 from uuid import UUID
 
 from injector import inject
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.utils import current_user_is_admin
 from app.db.models.notification_type import NotificationTypeModel
 from app.db.models.notification_type_recipient_group import NotificationTypeRecipientGroupModel
 from app.db.models.notification_type_recipient_user import NotificationTypeRecipientUserModel
 from app.db.models.user_notification_setting import UserNotificationSettingModel
+
+MAX_NOTIFICATION_MARK_READ_BATCH = 500
 
 NOTIFICATION_TYPE_DEFINITIONS: dict[str, dict[str, bool]] = {
     "conversation_started": {"is_tenant": False},
@@ -20,8 +24,45 @@ NOTIFICATION_TYPE_DEFINITIONS: dict[str, dict[str, bool]] = {
 
 @inject
 class NotificationRepository:
+    """Shared notification type + audience persistence."""
+
+    NOTIFICATION_ID_PREFIX_TO_TYPE_KEY: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("conversation_started:", "conversation_started"),
+        ("conversation_hostility:", "conversation_hostility"),
+        ("conversation_finalized_hostility:", "conversation_finalized_hostility"),
+        ("workflow_failed:", "workflow_failed"),
+    )
+
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @classmethod
+    def type_key_for_notification_id(cls, item_id: str) -> str | None:
+        s = (item_id or "").strip()
+        for prefix, key in cls.NOTIFICATION_ID_PREFIX_TO_TYPE_KEY:
+            if s.startswith(prefix):
+                return key
+        return None
+
+    @classmethod
+    def type_keys_from_notification_ids(cls, raw_ids: list[str]) -> set[str]:
+        seen_ids: set[str] = set()
+        out: set[str] = set()
+        count = 0
+        for raw in raw_ids:
+            if not isinstance(raw, str):
+                continue
+            s = raw.strip()
+            if not s or s in seen_ids:
+                continue
+            seen_ids.add(s)
+            tk = cls.type_key_for_notification_id(s)
+            if tk:
+                out.add(tk)
+            count += 1
+            if count >= MAX_NOTIFICATION_MARK_READ_BATCH:
+                break
+        return out
 
     async def ensure_notification_types(self) -> dict[str, NotificationTypeModel]:
         keys = list(NOTIFICATION_TYPE_DEFINITIONS.keys())
@@ -254,6 +295,7 @@ class NotificationRepository:
                 NotificationTypeRecipientUserModel(
                     notification_type_id=nt.id,
                     user_id=uid,
+                    is_read=False,
                 )
             )
         for gid in group_ids:
@@ -269,3 +311,65 @@ class NotificationRepository:
         users_map = await self._recipient_users_by_type_id([nt.id])
         groups_map = await self._recipient_groups_by_type_id([nt.id])
         return nt, users_map.get(nt.id, set()), groups_map.get(nt.id, set())
+
+    async def notification_type_keys_marked_read(self, user_id: UUID) -> set[str]:
+        stmt = (
+            select(NotificationTypeModel.type)
+            .join(
+                NotificationTypeRecipientUserModel,
+                NotificationTypeRecipientUserModel.notification_type_id
+                == NotificationTypeModel.id,
+            )
+            .where(
+                NotificationTypeRecipientUserModel.user_id == user_id,
+                NotificationTypeRecipientUserModel.is_read.is_(True),
+                NotificationTypeRecipientUserModel.is_deleted == 0,
+            )
+        )
+        result = await self.db.execute(stmt)
+        keys = {row[0] for row in result.all()}
+        return {k for k in keys if k in NOTIFICATION_TYPE_DEFINITIONS}
+
+    async def mark_notifications_read(
+        self,
+        user_id: UUID,
+        keys: list[str],
+        *,
+        user_group_id: UUID | None,
+        supervised_group_ids: list[UUID],
+    ) -> None:
+        type_keys = self.type_keys_from_notification_ids(keys)
+        if not type_keys:
+            return
+
+        audience = await self.build_audience_flags_for_user(
+            user_id=user_id,
+            user_group_id=user_group_id,
+            supervised_group_ids=list(supervised_group_ids or []),
+            bypass_audience_restrictions=current_user_is_admin(),
+        )
+        types = await self.ensure_notification_types()
+        for tk in type_keys:
+            if not audience.get(tk, False):
+                continue
+            nt = types.get(tk)
+            if not nt:
+                continue
+            stmt = select(NotificationTypeRecipientUserModel).where(
+                NotificationTypeRecipientUserModel.user_id == user_id,
+                NotificationTypeRecipientUserModel.notification_type_id == nt.id,
+                NotificationTypeRecipientUserModel.is_deleted == 0,
+            )
+            result = await self.db.execute(stmt)
+            row = result.scalars().first()
+            if row:
+                row.is_read = True
+            else:
+                self.db.add(
+                    NotificationTypeRecipientUserModel(
+                        notification_type_id=nt.id,
+                        user_id=user_id,
+                        is_read=True,
+                    )
+                )
+        await self.db.commit()

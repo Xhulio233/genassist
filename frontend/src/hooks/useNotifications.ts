@@ -12,6 +12,7 @@ import { Notification } from "@/interfaces/notification.interface"
 import {
   fetchDashboardNotifications,
   fetchDashboardNotificationsPage,
+  markDashboardNotificationsRead,
   type NotificationTypeFilter,
 } from "@/services/dashboard"
 import { useWebSocketDashboardContext } from "@/context/WebSocketDashboardContext"
@@ -35,7 +36,6 @@ export function notificationsInfiniteQueryKey(
   return [NOTIFICATIONS_INFINITE_QUERY_KEY[0], conversationStarted, notificationType]
 }
 
-const NOTIFICATION_READ_MAP_KEY = "notifications_read_map"
 const NOTIFICATIONS_PAGE_SIZE = 20
 
 type NotificationFeedPage = {
@@ -43,23 +43,19 @@ type NotificationFeedPage = {
   hasMore: boolean
 }
 
-function loadReadMap(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(NOTIFICATION_READ_MAP_KEY)
-    if (!raw) return {}
-    return JSON.parse(raw) as Record<string, boolean>
-  } catch {
-    return {}
-  }
-}
-
-function saveReadMap(readMap: Record<string, boolean>): void {
-  localStorage.setItem(NOTIFICATION_READ_MAP_KEY, JSON.stringify(readMap))
-}
-
-function applyReadMap(items: Notification[]): Notification[] {
-  const readMap = loadReadMap()
-  return items.map((item) => ({ ...item, read: Boolean(readMap[item.id]) }))
+function bellQueryKeyParts(
+  conversationStarted: boolean,
+  conversationHostility: boolean,
+  conversationFinalizedHostility: boolean,
+  workflowFailed: boolean
+) {
+  return [
+    ...NOTIFICATIONS_QUERY_KEY,
+    conversationStarted,
+    conversationHostility,
+    conversationFinalizedHostility,
+    workflowFailed,
+  ] as const
 }
 
 export const useNotifications = () => {
@@ -73,14 +69,15 @@ export const useNotifications = () => {
     workflowFailed,
   } = settings
 
+  const bellKey = bellQueryKeyParts(
+    conversationStarted,
+    conversationHostility,
+    conversationFinalizedHostility,
+    workflowFailed
+  )
+
   const { data: notifications = [], refetch } = useQuery<Notification[]>({
-    queryKey: [
-      ...NOTIFICATIONS_QUERY_KEY,
-      conversationStarted,
-      conversationHostility,
-      conversationFinalizedHostility,
-      workflowFailed,
-    ],
+    queryKey: bellKey,
     queryFn: async () => {
       const items = await fetchDashboardNotifications(80, {
         includeConversationStarted: conversationStarted,
@@ -88,55 +85,59 @@ export const useNotifications = () => {
         includeConversationFinalizedHostility: conversationFinalizedHostility,
         includeWorkflowFailed: workflowFailed,
       })
-      return applyReadMap(items ?? [])
+      return items ?? []
     },
     refetchInterval: isPollEnabled ? 15000 : false,
   })
 
   const updateCachedNotifications = useCallback(
     (updater: (prev: Notification[]) => Notification[]) => {
-      queryClient.setQueryData<Notification[]>(
-        [
-          ...NOTIFICATIONS_QUERY_KEY,
-          conversationStarted,
-          conversationHostility,
-          conversationFinalizedHostility,
-          workflowFailed,
-        ],
-        (prev) => updater(prev ?? [])
+      queryClient.setQueryData<Notification[]>(bellKey, (prev) =>
+        updater(prev ?? [])
       )
     },
-    [
-      queryClient,
-      conversationStarted,
-      conversationHostility,
-      conversationFinalizedHostility,
-      workflowFailed,
-    ]
+    [queryClient, bellKey]
   )
 
-  const markAllAsRead = () => {
-    const readMap = loadReadMap()
-    notifications.forEach((notification) => {
-      readMap[notification.id] = true
-    })
-    saveReadMap(readMap)
-    updateCachedNotifications((prev) =>
-      prev.map((notification) => ({ ...notification, read: true }))
-    )
-    toast.success("All notifications are marked as read.")
-  }
+  const markAllAsRead = useCallback(() => {
+    void (async () => {
+      const ids = notifications.filter((n) => !n.read).map((n) => n.id)
+      if (ids.length === 0) {
+        return
+      }
+      try {
+        await markDashboardNotificationsRead(ids)
+        updateCachedNotifications((prev) =>
+          prev.map((notification) => ({ ...notification, read: true }))
+        )
+        toast.success("All notifications are marked as read.")
+      } catch {
+        toast.error("Could not mark notifications as read.")
+        void refetch()
+      }
+    })()
+  }, [notifications, updateCachedNotifications, refetch])
 
-  const markAsRead = (id: string) => {
-    const readMap = loadReadMap()
-    readMap[id] = true
-    saveReadMap(readMap)
-    updateCachedNotifications((prev) =>
-      prev.map((notification) =>
-        notification.id === id ? { ...notification, read: true } : notification
-      )
-    )
-  }
+  const markAsRead = useCallback(
+    (id: string) => {
+      void (async () => {
+        try {
+          await markDashboardNotificationsRead([id])
+          updateCachedNotifications((prev) =>
+            prev.map((notification) =>
+              notification.id === id
+                ? { ...notification, read: true }
+                : notification
+            )
+          )
+        } catch {
+          toast.error("Could not mark notification as read.")
+          void refetch()
+        }
+      })()
+    },
+    [updateCachedNotifications, refetch]
+  )
 
   const handleSocketMessage = useCallback(
     (data: Record<string, unknown>) => {
@@ -150,7 +151,7 @@ export const useNotifications = () => {
         timestamp: String(payload.timestamp ?? new Date().toISOString()),
         type: (payload.type as Notification["type"]) ?? "info",
         actionUrl: payload.action_url ? String(payload.action_url) : undefined,
-        read: Boolean(loadReadMap()[String(payload.id ?? "")]),
+        read: false,
       }
 
       if (!incoming.id) return
@@ -174,7 +175,9 @@ export const useNotifications = () => {
         const exists = prev.some((item) => item.id === incoming.id)
         if (exists) {
           return prev.map((item) =>
-            item.id === incoming.id ? { ...item, ...incoming } : item
+            item.id === incoming.id
+              ? { ...item, ...incoming, read: item.read }
+              : item
           )
         }
         return [incoming, ...prev]
@@ -240,6 +243,13 @@ export const useNotificationsInfinite = ({
     workflowFailed,
   ] as const
 
+  const bellKey = bellQueryKeyParts(
+    conversationStarted,
+    conversationHostility,
+    conversationFinalizedHostility,
+    workflowFailed
+  )
+
   const infinite = useInfiniteQuery({
     queryKey: infiniteKey,
     queryFn: async ({ pageParam }): Promise<NotificationFeedPage> => {
@@ -255,7 +265,7 @@ export const useNotificationsInfinite = ({
       )
       if (!page) return { items: [], hasMore: false }
       return {
-        items: applyReadMap(page.items),
+        items: page.items,
         hasMore: page.hasMore,
       }
     },
@@ -287,73 +297,51 @@ export const useNotificationsInfinite = ({
         }
       )
     },
-    [
-      queryClient,
-      conversationStarted,
-      conversationHostility,
-      conversationFinalizedHostility,
-      workflowFailed,
-      typeFilter,
-      infiniteKey,
-    ]
+    [queryClient, infiniteKey]
   )
 
   const markAsRead = useCallback(
     (id: string) => {
-      const readMap = loadReadMap()
-      readMap[id] = true
-      saveReadMap(readMap)
-      setInfinitePagesRead((n) => n.id === id)
-      void queryClient.invalidateQueries({
-        queryKey: [
-          ...NOTIFICATIONS_QUERY_KEY,
-          conversationStarted,
-          conversationHostility,
-          conversationFinalizedHostility,
-          workflowFailed,
-        ],
-      })
+      void (async () => {
+        try {
+          await markDashboardNotificationsRead([id])
+          setInfinitePagesRead((n) => n.id === id)
+          void queryClient.invalidateQueries({ queryKey: bellKey })
+        } catch {
+          toast.error("Could not mark notification as read.")
+          void infinite.refetch()
+        }
+      })()
     },
-    [
-      queryClient,
-      conversationStarted,
-      conversationHostility,
-      conversationFinalizedHostility,
-      workflowFailed,
-      setInfinitePagesRead,
-    ]
+    [bellKey, setInfinitePagesRead, queryClient, infinite.refetch]
   )
 
   const markAllAsRead = useCallback(() => {
-    const key = infiniteKey
-    const pages = queryClient.getQueryData<InfiniteData<NotificationFeedPage>>(
-      key
-    )
-    const ids = pages?.pages.flatMap((p) => p.items.map((i) => i.id)) ?? []
-    const readMap = loadReadMap()
-    ids.forEach((id) => {
-      readMap[id] = true
-    })
-    saveReadMap(readMap)
-    setInfinitePagesRead(() => true)
-    void queryClient.invalidateQueries({
-      queryKey: [
-        ...NOTIFICATIONS_QUERY_KEY,
-        conversationStarted,
-        conversationHostility,
-        conversationFinalizedHostility,
-        workflowFailed,
-      ],
-    })
-    toast.success("All loaded notifications are marked as read.")
+    void (async () => {
+      const pages = queryClient.getQueryData<InfiniteData<NotificationFeedPage>>(
+        infiniteKey
+      )
+      const items = pages?.pages.flatMap((p) => p.items) ?? []
+      const ids = items.filter((n) => !n.read).map((n) => n.id)
+      if (ids.length === 0) {
+        return
+      }
+      try {
+        await markDashboardNotificationsRead(ids)
+        setInfinitePagesRead(() => true)
+        void queryClient.invalidateQueries({ queryKey: bellKey })
+        toast.success("All loaded notifications are marked as read.")
+      } catch {
+        toast.error("Could not mark notifications as read.")
+        void infinite.refetch()
+      }
+    })()
   }, [
     queryClient,
-    conversationStarted,
-    conversationHostility,
-    conversationFinalizedHostility,
-    workflowFailed,
-    setInfinitePagesRead,
     infiniteKey,
+    setInfinitePagesRead,
+    bellKey,
+    infinite.refetch,
   ])
 
   return {

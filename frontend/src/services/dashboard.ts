@@ -97,6 +97,7 @@ export const fetchDashboardIntegrations = async (): Promise<IntegrationsResponse
 
 type NotificationFeedItemRaw = Omit<Notification, "read" | "actionUrl"> & {
   action_url: string;
+  read?: boolean;
 };
 
 function mapNotificationFeedItems(
@@ -108,7 +109,7 @@ function mapNotificationFeedItems(
     description: item.description,
     timestamp: item.timestamp,
     type: item.type,
-    read: false,
+    read: Boolean(item.read),
     actionUrl: item.action_url,
   }));
 }
@@ -185,6 +186,18 @@ export const fetchDashboardNotifications = async (
     options?.notificationType ?? "all"
   );
   return page?.items ?? null;
+};
+
+/** Persist read state for dashboard notification feed items (current user). */
+export const markDashboardNotificationsRead = async (
+  notificationIds: string[]
+): Promise<void> => {
+  if (notificationIds.length === 0) {
+    return;
+  }
+  await apiRequest<unknown>("post", "/dashboard/notifications/mark-read", {
+    notification_ids: notificationIds,
+  });
 };
 
 /**

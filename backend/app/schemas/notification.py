@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class NotificationItem(BaseModel):
@@ -12,11 +12,39 @@ class NotificationItem(BaseModel):
     type: str
     action_url: str
     group_id: str | None = None
+    read: bool = False
 
 
 class NotificationFeedResponse(BaseModel):
     items: list[NotificationItem]
     has_more: bool = False
+
+
+class NotificationMarkReadRequest(BaseModel):
+    """Mark dashboard notification feed rows as read for the current user."""
+
+    notification_ids: list[str] = Field(
+        default_factory=list,
+        max_length=500,
+        description="Stable notification ids from the feed (e.g. conversation_started:<uuid>).",
+    )
+
+    @field_validator("notification_ids", mode="before")
+    @classmethod
+    def _normalize_notification_ids(cls, v: object) -> list[str]:
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in v:
+            if not isinstance(raw, str):
+                continue
+            s = raw.strip()
+            if not s or len(s) > 512 or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out[:500]
 
 
 class NotificationUserSettingsRead(BaseModel):
