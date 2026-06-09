@@ -1,5 +1,5 @@
 import React, { ReactNode } from "react";
-import { usePermissions } from "../context/PermissionContext";
+import { usePermissions } from "../context/UserSessionContext";
 
 interface CanProps {
   permissions: string[];

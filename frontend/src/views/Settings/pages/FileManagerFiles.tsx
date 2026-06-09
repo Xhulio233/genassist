@@ -33,7 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/alert-dialog";
-import { usePermissions } from "@/context/PermissionContext";
+import { usePermissions } from "@/context/UserSessionContext";
 import {
   deleteFileRecord,
   getFileBase64,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
-import { completeMicrosoftSso, fetchUserPermissions } from "@/services/auth";
+import { completeMicrosoftSso } from "@/services/auth";
 import { useFeatureFlag } from "@/context/FeatureFlagContext";
 import { GenAssistLogo } from "@/components/GenAssistLogo";
 
@@ -32,6 +32,9 @@ const LoginSsoCallbackPage = () => {
           return;
         }
 
+        // Persist only session credentials. Identity, roles, permissions and
+        // force_upd_pass_date are loaded from GET /auth/me into
+        // UserSessionContext on the full reload below — never stored locally.
         localStorage.setItem("access_token", response.access_token);
         localStorage.setItem("refresh_token", response.refresh_token ?? "");
         const tokenType = response.token_type || "bearer";
@@ -39,21 +42,9 @@ const LoginSsoCallbackPage = () => {
           "token_type",
           tokenType.toLowerCase() === "bearer" ? "Bearer" : tokenType
         );
-        localStorage.setItem("isAuthenticated", "true");
-
-        if (response.force_upd_pass_date) {
-          localStorage.setItem("force_upd_pass_date", response.force_upd_pass_date);
-        } else {
-          localStorage.removeItem("force_upd_pass_date");
-        }
 
         try {
           await refreshFlags();
-        } catch {
-          // ignore
-        }
-        try {
-          await fetchUserPermissions();
         } catch {
           // ignore
         }

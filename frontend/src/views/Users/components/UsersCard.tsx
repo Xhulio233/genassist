@@ -9,7 +9,8 @@ import { Label } from "@/components/label";
 import { Switch } from "@/components/switch";
 import { deleteUser, getAllUsers, restoreUser } from "@/services/users";
 import { getAllUserGroups } from "@/services/userGroups";
-import { currentUserIsAdmin, getCurrentUserId } from "@/services/auth";
+import { getCurrentUserId } from "@/services/auth";
+import { useIsAdmin } from "@/context/UserSessionContext";
 import { toast } from "react-hot-toast";
 import { User } from "@/interfaces/user.interface";
 import { UserGroup } from "@/interfaces/userGroup.interface";
@@ -30,7 +31,7 @@ export function UsersCard({
   updatedUser = null,
 }: UsersCardProps) {
   const PAGE_SIZE = 10;
-  const isAdmin = currentUserIsAdmin();
+  const isAdmin = useIsAdmin();
   const [users, setUsers] = useState<User[]>([]);
   const [groupMap, setGroupMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);

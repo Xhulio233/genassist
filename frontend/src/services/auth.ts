@@ -1,6 +1,5 @@
 import { jwtDecode } from "jwt-decode";
 import { apiRequest } from "@/config/api";
-import { User } from "@/interfaces/user.interface";
 import { Role } from "@/interfaces/role.interface";
 import { applySentryUserFromMeResponse, hasSentry } from "@/plugins/sentryUserSync";
 
@@ -24,7 +23,9 @@ export interface AuthMeResponse {
   username?: string;
   email?: string;
   permissions: string[];
-  roles: Role[]
+  roles: Role[];
+  /** ISO date after which a password change is required. Returned by GET /auth/me. */
+  force_upd_pass_date?: string | null;
 }
 
 interface LoginCredentials extends Record<string, unknown> {
@@ -58,58 +59,18 @@ export const login = async (
     );
 
     if (response?.access_token) {
+      // Only session credentials + tenant are persisted. Identity/roles/
+      // permissions and force_upd_pass_date come from GET /auth/me (held in
+      // memory by UserSessionContext) — never from localStorage.
       localStorage.setItem("access_token", response.access_token);
       localStorage.setItem("refresh_token", response.refresh_token);
       localStorage.setItem("tenant_id", tenant ? tenant : "");
       const tokenType = response.token_type || "bearer";
       localStorage.setItem("token_type", tokenType.toLowerCase() === "bearer" ? "Bearer" : tokenType);
-      localStorage.setItem("isAuthenticated", "true");
-
-    // Store force_upd_pass_date if provided
-      if (response.force_upd_pass_date) {
-        localStorage.setItem("force_upd_pass_date", response.force_upd_pass_date);
-      }
     }
 
     return response;
   };
-
-export const persistAuthMe = (
-  response: AuthMeResponse | null | undefined
-): void => {
-  if (!response) return;
-  localStorage.setItem(
-    "permissions",
-    JSON.stringify(response.permissions ?? [])
-  );
-  localStorage.setItem("user_roles", JSON.stringify(response.roles ?? []));
-
-  if (hasSentry()) {
-    applySentryUserFromMeResponse(response ?? undefined);
-  }
-};
-
-export const getUserRoleNames = (): string[] => {
-  const raw = localStorage.getItem("user_roles");
-  if (!raw) return [];
-  try {
-    const roles = JSON.parse(raw) as { name?: string }[];
-    return roles.map((r) => r.name).filter((n): n is string => Boolean(n));
-  } catch {
-    return [];
-  }
-};
-
-export const currentUserIsAdmin = (): boolean =>
-  getUserRoleNames().includes("admin");
-
-export const fetchUserPermissions = async (): Promise<void> => {
-  const permissionsResponse = await apiRequest<AuthMeResponse>(
-    "GET",
-    "/auth/me"
-  );
-  persistAuthMe(permissionsResponse ?? undefined);
-};
 
 export const getCurrentUserId = (): string | null => {
   const token = localStorage.getItem("access_token");
@@ -120,42 +81,6 @@ export const getCurrentUserId = (): string | null => {
   } catch {
     return null;
   }
-};
-
-export const getPermissions = (): string[] => {
-  const permissions = localStorage.getItem("permissions");
-
-  if (!permissions) {
-    return [];
-  }
-
-  try {
-    return permissions ? JSON.parse(permissions) : [];
-  } catch (error) {
-    return [];
-  }
-};
-
-export const hasPermission = (permission: string): boolean => {
-  const permissions = getPermissions() || [];
-  return permissions.includes('*') || permissions.includes(permission);
-};
-
-export const hasAllPermissions = (requiredPermissions: string[]): boolean => {
-  if (!requiredPermissions || requiredPermissions.length === 0) return true;
-
-  const userPermissions = getPermissions();
-  return requiredPermissions.every((perm) => userPermissions.includes(perm));
-};
-
-export const hasAnyPermission = (requiredPermissions: string[]): boolean => {
-  if (!requiredPermissions || requiredPermissions.length === 0) return true;
-
-  const userPermissions = getPermissions();
-
-  if (userPermissions.includes("*")) return true;
-
-  return requiredPermissions.some((perm) => userPermissions.includes(perm));
 };
 
 export const logout = (): void => {
@@ -267,32 +192,3 @@ export const isAuthenticated = (): boolean => {
   // No refresh token and invalid access token means not authenticated
   return false;
 };
-
-export const isPasswordUpdateRequired = (): boolean => {
-  const forceUpdPassDate = localStorage.getItem("force_upd_pass_date");
-
-  if (!forceUpdPassDate) return false;
-
-  try {
-    const forceUpdateDate = new Date(forceUpdPassDate);
-    const today = new Date();
-    today.setHours(23, 59, 59, 999); // End of today
-
-    // If force_upd_pass_date is today or in the past, password update is required
-    return forceUpdateDate <= today;
-  } catch (error) {
-    return false;
-  }
-};
-
-export const getForceUpdatePassDate = (): string | null => {
-  return localStorage.getItem("force_upd_pass_date");
-};
-
-export async function getAuthMe(): Promise<User> {
-  const response = await apiRequest<User>(
-    "GET",
-    "/auth/me"
-  );
-  return response;
-}

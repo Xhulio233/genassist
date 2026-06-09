@@ -10,7 +10,7 @@ function captureSentryIfApiHttpError(error: unknown): void {
   Sentry.captureException(error, { tags: { source: "api", http_status: String(status) } });
 }
 
-const AUTH_KEYS = ["access_token", "refresh_token", "token_type", "isAuthenticated", "force_upd_pass_date", "tenant_id"] as const;
+const AUTH_KEYS = ["access_token", "refresh_token", "token_type", "tenant_id"] as const;
 
 const clearAuthStorage = () => AUTH_KEYS.forEach((key) => localStorage.removeItem(key));
 
@@ -126,9 +126,7 @@ api.interceptors.response.use(
 
         localStorage.setItem("access_token", data.access_token);
         localStorage.setItem("token_type", data.token_type || "Bearer");
-        localStorage.setItem("isAuthenticated", "true");
         if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-        if (data.force_upd_pass_date) localStorage.setItem("force_upd_pass_date", data.force_upd_pass_date);
 
         originalRequest.headers.Authorization = `${data.token_type || "Bearer"} ${data.access_token}`;
         processQueue(null, data.access_token);

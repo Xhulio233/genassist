@@ -33,15 +33,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/dropdown-menu";
-import {
-  logout,
-  hasAnyPermission,
-  getAuthMe,
-  getTenantId,
-} from "@/services/auth";
+import { logout, getTenantId } from "@/services/auth";
 import toast from "react-hot-toast";
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useCallback, useMemo } from "react";
 import { useFeatureFlag } from "@/context/FeatureFlagContext";
+import {
+  useCurrentUser,
+  usePermissionChecks,
+} from "@/context/UserSessionContext";
 import { FeatureFlags } from "@/config/featureFlags";
 import { usePersistedState } from "@/hooks/usePersistedState";
 import { cn } from "@/helpers/utils";
@@ -467,8 +466,12 @@ function UserFooter({
 
 export function AppSidebar() {
   const { isMobile, openMobile, setOpenMobile } = useSidebar();
-  const [username, setUsername] = useState<string>("");
-  const [tenantId, setTenantId] = useState<string>("");
+  // Identity comes from the in-memory user session (GET /auth/me), not
+  // localStorage. Tenant is read from the persisted session header value.
+  const currentUser = useCurrentUser();
+  const username = currentUser?.username ?? "";
+  const tenantId = getTenantId() ?? "";
+  const { hasAnyPermission } = usePermissionChecks();
   const { getFeatureItem } = useFeatureFlag();
 
   const location = useLocation();
@@ -507,29 +510,6 @@ export function AppSidebar() {
     }),
     [isAnalyticsOpen, isTestsOpen, isIntegrationsOpen, isLLMSettingsOpen, isAdminOpen]
   );
-
-  useEffect(() => {
-    const cached = localStorage.getItem("auth_username");
-    if (cached) {
-      setUsername(cached);
-      setTenantId(getTenantId() ?? "");
-      return;
-    }
-    const loadUser = async () => {
-      try {
-        setTenantId(getTenantId() ?? "");
-        const me = await getAuthMe();
-        if (me?.username) {
-          setUsername(me.username);
-          localStorage.setItem("auth_username", me.username);
-        }
-      } catch {
-        setUsername("");
-        setTenantId(getTenantId() ?? "");
-      }
-    };
-    loadUser();
-  }, []);
 
   // Auto-expand section when navigating directly to a child route
   useEffect(() => {
@@ -575,7 +555,7 @@ export function AppSidebar() {
         return acc;
       }, []);
     },
-    [getFeatureItem]
+    [getFeatureItem, hasAnyPermission]
   );
 
   const filteredMenuItems = filterItems(menuItems);

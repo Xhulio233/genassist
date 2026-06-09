@@ -1,10 +1,11 @@
 import { Navigate, useLocation } from "react-router-dom";
-import { isAuthenticated, isPasswordUpdateRequired } from "@/services/auth";
+import { isAuthenticated } from "@/services/auth";
 import {
   usePermissions,
-  useIsLoadingPermissions,
-  useRefreshPermissions,
-} from "@/context/PermissionContext";
+  useIsLoadingSession,
+  useRefreshSession,
+  usePasswordUpdateRequired,
+} from "@/context/UserSessionContext";
 import { Skeleton } from "@/components/skeleton";
 import { useEffect } from "react";
 import { useServerStatus } from "@/context/ServerStatusContext";
@@ -20,8 +21,9 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 }) => {
   const location = useLocation();
   const permissions = usePermissions();
-  const isLoading = useIsLoadingPermissions();
-  const refreshPermissions = useRefreshPermissions();
+  const isLoading = useIsLoadingSession();
+  const refreshPermissions = useRefreshSession();
+  const passwordUpdateRequired = usePasswordUpdateRequired();
   const { status, isOffline } = useServerStatus();
   // Removed proactive refresh to avoid duplicate API calls when server is down
 
@@ -41,7 +43,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   }
 
   // Allow access to change-password route even if password update is required
-  if (isPasswordUpdateRequired() && location.pathname !== "/change-password") {
+  if (passwordUpdateRequired && location.pathname !== "/change-password") {
     return <Navigate to="/change-password" state={{ from: location }} replace />;
   }
 

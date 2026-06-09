@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { login as loginApi } from "@/services/auth";
+import {
+  login as loginApi,
+  isAuthenticated as isAuthenticatedFn,
+  logout as logoutService,
+} from "@/services/auth";
 import { AxiosError } from "axios";
-import { useFeatureFlag } from "@/context/FeatureFlagContext";
 
 interface LoginResponse {
   access_token?: string;
@@ -12,10 +15,11 @@ interface LoginResponse {
 }
 
 export const useAuth = () => {
+  // Authentication is derived from the session token (presence + validity +
+  // refresh capability), never from a localStorage flag.
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    localStorage.getItem("isAuthenticated") === "true"
+    isAuthenticatedFn()
   );
-  const { refreshFlags } = useFeatureFlag();
 
   const login = async (
     username: string,
@@ -41,13 +45,11 @@ export const useAuth = () => {
   };
 
   const logout = () => {
-    localStorage.removeItem("isAuthenticated");
+    logoutService();
     setIsAuthenticated(false);
   };
 
-  const checkAuth = (): boolean => {
-    return localStorage.getItem("isAuthenticated") === "true";
-  };
+  const checkAuth = (): boolean => isAuthenticatedFn();
 
   return {
     isAuthenticated,

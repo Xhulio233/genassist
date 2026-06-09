@@ -7,7 +7,7 @@ import { PageLayout } from "@/components/PageLayout"
 import { Switch } from "@/components/switch"
 import { useNotificationAdminTargeting } from "@/hooks/useNotificationAdminTargeting"
 import { useNotificationUserSettings } from "@/hooks/useNotificationUserSettings"
-import { currentUserIsAdmin } from "@/services/auth"
+import { useIsAdmin } from "@/context/UserSessionContext"
 import type { NotificationTypeTargeting } from "@/services/notificationAdminTargeting"
 import {
   NotificationAudienceDialog,
@@ -17,7 +17,7 @@ import {
 export function NotificationsSettings() {
   const { settings, setSetting, isLoading, isSaving } =
     useNotificationUserSettings()
-  const isAdmin = currentUserIsAdmin()
+  const isAdmin = useIsAdmin()
   const [audienceTypeKey, setAudienceTypeKey] =
     useState<NotificationAudienceTypeKey | null>(null)
 

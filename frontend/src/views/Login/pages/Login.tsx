@@ -4,7 +4,6 @@ import toast from "react-hot-toast";
 import { LoginForm } from "../components/LoginForm";
 import { useAuth } from "../hooks/useAuth";
 import { ForcePasswordUpdateDialog } from "../components/ForcePasswordUpdateDialog";
-import { fetchUserPermissions } from "@/services/auth";
 import { TermsAndPolicyNotice } from "@/components/TermsAndPolicyNotice";
 import { AuthMockupPanel } from "@/components/AuthMockupPanel";
 import { useFeatureFlag } from "@/context/FeatureFlagContext";
@@ -67,30 +66,16 @@ const LoginPage = () => {
     setIsLoading(true);
 
     try {
-      // Store tenant in localStorage
+      // Persist tenant so the x-tenant-id header is attached to subsequent
+      // requests (including GET /auth/me on the next load).
       localStorage.setItem("tenant_id", tenant);
-      
+
+      // Session tokens are persisted by services `login`. Identity, roles,
+      // permissions and force_upd_pass_date are loaded from GET /auth/me into
+      // UserSessionContext on the post-login reload — never stored locally.
       const response = await login(username, password, tenant);
 
       if (response?.access_token) {
-        // Login was successful, store tokens
-        localStorage.setItem("access_token", response.access_token);
-        localStorage.setItem("refresh_token", response.refresh_token ?? "");
-        const tokenType = response.token_type || "bearer";
-        localStorage.setItem(
-          "token_type",
-          tokenType.toLowerCase() === "bearer" ? "Bearer" : tokenType
-        );
-        localStorage.setItem("isAuthenticated", "true");
-
-        // Store force_upd_pass_date if provided
-        if (response.force_upd_pass_date) {
-          localStorage.setItem(
-            "force_upd_pass_date",
-            response.force_upd_pass_date
-          );
-        }
-
         // Check if password update is required
         const needsUpdate =
           response.force_upd_pass_date &&
@@ -107,16 +92,12 @@ const LoginPage = () => {
           return;
         }
 
-        // No password update required - proceed with normal login flow
-        // Execute post-login actions sequentially to avoid race conditions
+        // No password update required - proceed with normal login flow.
+        // The user session (identity/roles/permissions) is loaded from
+        // GET /auth/me by UserSessionContext on the post-login full reload
+        // below, so there is nothing to fetch or persist here.
         try {
           await refreshFlags();
-        } catch (error) {
-          // ignore
-        }
-
-        try {
-          await fetchUserPermissions();
         } catch (error) {
           // ignore
         }
@@ -189,8 +170,6 @@ const LoginPage = () => {
   const handlePasswordUpdated = () => {
     setForceUpdateInfo(null);
     setIsForceUpdateDialogOpen(false);
-    // Clear the stored force_upd_pass_date since password was updated
-    localStorage.removeItem("force_upd_pass_date");
     const from = location.state?.from;
     navigate("/login", {
       replace: true,

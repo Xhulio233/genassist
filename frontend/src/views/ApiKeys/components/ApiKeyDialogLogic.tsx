@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getAuthMe } from "@/services/auth";
+import { useCurrentUser } from "@/context/UserSessionContext";
 import { getUser } from "@/services/users";
 import { createApiKey, updateApiKey } from "@/services/apiKeys";
 import { toast } from "react-hot-toast";
@@ -54,15 +54,19 @@ export function ApiKeyDialogLogic({
   const [userId, setUserId] = useState<string | null>(null);
   const [hasGeneratedKey, setHasGeneratedKey] = useState(false);
   const [expiryPreset, setExpiryPreset] = useState<string>("never");
+  // Current user identity comes from the in-memory user session (GET /auth/me).
+  const currentUser = useCurrentUser();
 
   useEffect(() => {
     const fetchUserData = async () => {
       try {
-        const me = await getAuthMe();
-        setUserId(me.id);
+        const uid = currentUser?.id ?? null;
+        setUserId(uid);
 
-        const fullUser = await getUser(me.id);
-        setAvailableRoles(fullUser.roles || []);
+        if (uid) {
+          const fullUser = await getUser(uid);
+          setAvailableRoles(fullUser.roles || []);
+        }
 
         if (mode === "edit" && apiKeyToEdit) {
           setDialogMode("edit");
@@ -96,7 +100,7 @@ export function ApiKeyDialogLogic({
     } else {
       resetForm();
     }
-  }, [isOpen, mode, apiKeyToEdit]);
+  }, [isOpen, mode, apiKeyToEdit, currentUser?.id]);
 
   const resetForm = () => {
     setName("");

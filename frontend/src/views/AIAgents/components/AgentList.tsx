@@ -26,7 +26,7 @@ import { AgentFormDialog } from "./AgentForm";
 import { SearchInput } from "@/components/SearchInput";
 import { Tabs, TabsList, TabsTrigger } from "@/components/tabs";
 import { getAgentConfig } from "@/services/api";
-import { currentUserIsAdmin } from "@/services/auth";
+import { useIsAdmin } from "@/context/UserSessionContext";
 import { toast } from "react-hot-toast";
 import { PageListSkeleton } from "@/components/skeletons";
 
@@ -64,7 +64,7 @@ const AgentList: React.FC<AgentListProps> = ({
   const [searchTerm, setSearchTerm] = useState("");
   const navigate = useNavigate();
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const isAdmin = useMemo(() => currentUserIsAdmin(), []);
+  const isAdmin = useIsAdmin();
 
   // Infinite scroll using IntersectionObserver
   useEffect(() => {

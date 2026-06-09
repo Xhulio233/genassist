@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { StatsOverviewCard } from "./StatsOverviewCard";
 
-import { usePermissions, useIsLoadingPermissions } from "@/context/PermissionContext";
+import { usePermissions, useIsLoadingPermissions } from "@/context/UserSessionContext";
 import { fetchDashboardSummary } from "@/services/dashboard";
 import type { DashboardSummaryStats } from "@/interfaces/dashboard.interface";
 import { useFeatureFlagVisible } from "@/components/featureFlag";

@@ -8,29 +8,23 @@ import { SettingSection } from '../components/SettingSection';
 import { useSettings } from '../hooks/useSettings';
 import { settingSections } from '../helpers/settingsData';
 import { Link } from 'react-router-dom';
-import { getAuthMe } from '@/services/auth';
+import { getTenantId } from '@/services/auth';
+import { useCurrentUser, useRoles } from '@/context/UserSessionContext';
 import { getFileManagerSettings, type FileManagerSettings } from '@/services/fileManager';
 import { getSecuritySettings, type SecuritySettings } from '@/services/appSettings';
 import { FileManagerSettingsCard } from '../components/FileManagerSettingsCard';
 import { SecuritySettingsCard } from '../components/SecuritySettingsCard';
-import type { User } from '@/interfaces/user.interface';
 
 const SettingsPage = () => {
   const { toggleStates, handleToggle } = useSettings();
-  const [userProfile, setUserProfile] = useState<User | null>(null);
+  // Profile identity and roles come from the in-memory user session.
+  const currentUser = useCurrentUser();
+  const roles = useRoles();
   const [fileManagerSettings, setFileManagerSettings] = useState<FileManagerSettings | null>(null);
   const [securitySettings, setSecuritySettings] = useState<SecuritySettings | null>(null);
   const isMobile = useIsMobile();
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const me = await getAuthMe();
-        setUserProfile(me);
-      } catch {
-        setUserProfile(null);
-      }
-    };
     const fetchFileManagerSettings = async () => {
       const settings = await getFileManagerSettings();
       setFileManagerSettings(settings);
@@ -39,18 +33,17 @@ const SettingsPage = () => {
       const settings = await getSecuritySettings();
       setSecuritySettings(settings);
     };
-    fetchProfile();
     fetchFileManagerSettings();
     fetchSecuritySettings();
   }, []);
 
   const sectionsWithData = useMemo(() => {
-    const tenant = localStorage.getItem('tenant_id') || '-';
+    const tenant = getTenantId() || '-';
     const profileValues = {
-      fullName: userProfile?.username || userProfile?.email || '',
-      username: userProfile?.username || '',
-      email: userProfile?.email || '',
-      roles: userProfile?.roles?.map((r) => r.name).filter(Boolean) ?? [],
+      fullName: currentUser?.username || currentUser?.email || '',
+      username: currentUser?.username || '',
+      email: currentUser?.email || '',
+      roles: roles.map((r) => r.name).filter(Boolean) ?? [],
       tenant,
     };
 
@@ -71,7 +64,7 @@ const SettingsPage = () => {
           }
         : section
     );
-  }, [userProfile]);
+  }, [currentUser, roles]);
 
   return (
     <SidebarProvider>

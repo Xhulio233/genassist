@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { currentUserIsAdmin } from "@/services/auth";
+import { useIsAdmin } from "@/context/UserSessionContext";
 import { getAllUserGroups } from "@/services/userGroups";
 import { fetchGroupAgents } from "@/services/analyticsReports";
 import type { AnalyticsFilterParams } from "@/interfaces/analyticsReports.interface";
@@ -8,7 +8,7 @@ import type { UserGroup } from "@/interfaces/userGroup.interface";
 import { useAgentsList } from "./useAgentsList";
 
 export function useAnalyticsFilters() {
-  const isAdmin = currentUserIsAdmin();
+  const isAdmin = useIsAdmin();
   const [groupFilter, setGroupFilterState] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
   const { agents: allAgents, agentNameMap: allAgentNameMap } = useAgentsList();

@@ -1,7 +1,7 @@
 import { Card } from "@/components/card";
 import { Files, FolderCog, Save } from "lucide-react";
 import { Link } from "react-router-dom";
-import { hasPermission } from "@/services/auth";
+import { usePermissionChecks } from "@/context/UserSessionContext";
 import {
   Select,
   SelectTrigger,
@@ -29,6 +29,7 @@ const providerOptions = [
 ];
 
 export const FileManagerSettingsCard = ({ settings }: FileManagerSettingsCardProps) => {
+  const { hasPermission } = usePermissionChecks();
   const provider = settings.values.file_manager_provider || "local";
   const [selectedProvider, setSelectedProvider] = useState(provider);
   const [isSaving, setIsSaving] = useState(false);

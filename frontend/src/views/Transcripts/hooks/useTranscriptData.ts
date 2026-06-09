@@ -8,7 +8,7 @@ import {
   processApiResponse,
   transformTranscript,
 } from "../helpers/transformers";
-import { usePermissions } from "@/context/PermissionContext";
+import { usePermissions } from "@/context/UserSessionContext";
 
 interface UseTranscriptDataOptions {
   id?: string;

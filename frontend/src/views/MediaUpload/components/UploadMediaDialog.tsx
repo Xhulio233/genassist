@@ -16,6 +16,7 @@ import {
 } from "@/components/select";
 import { toast } from "react-hot-toast";
 import { uploadAudio } from "@/services/audioUpload";
+import { isAuthenticated } from "@/services/auth";
 import { AudioLines, X } from "lucide-react";
 import { useOperators } from "../hooks/useOperators";
 
@@ -34,16 +35,10 @@ export function UploadMediaDialog({
   const { operators, imageErrors, setImageErrors } = useOperators();
   const navigate = useNavigate();
 
-  const checkAuthentication = (): boolean => {
-    const token = localStorage.getItem("access_token");
-    const isAuthenticated = localStorage.getItem("isAuthenticated") === "true";
-
-    if (!token || !isAuthenticated) {
-      return false;
-    }
-
-    return true;
-  };
+  // Authentication is determined from the session token (validity + refresh
+  // capability), not a localStorage flag. The backend remains the final
+  // authority and will reject the upload with 401 if the session is invalid.
+  const checkAuthentication = (): boolean => isAuthenticated();
 
   const getInitials = (firstName = "", lastName = "") => {
     return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
@@ -116,7 +111,6 @@ export function UploadMediaDialog({
         errorMsg.includes("Not authenticated")
       ) {
         toast.error("Your session has expired. Please log in again.");
-        localStorage.removeItem("isAuthenticated");
         navigate("/login");
       } else {
         toast.error(errorMsg);

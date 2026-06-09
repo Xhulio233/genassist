@@ -6,52 +6,30 @@ import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "react-hot-toast";
 import { apiRequest } from "@/config/api";
+import { getAccessToken, logout } from "@/services/auth";
 import {
-  isPasswordUpdateRequired,
-  getAccessToken,
-  logout,
-  getAuthMe,
-} from "@/services/auth";
+  useCurrentUser,
+  usePasswordUpdateRequired,
+} from "@/context/UserSessionContext";
 
 export default function ChangePassword() {
-  const [username, setUsername] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isForced, setIsForced] = useState(false);
+  // Identity and forced-update state come from the in-memory user session.
+  const currentUser = useCurrentUser();
+  const username = currentUser?.username ?? "";
+  const isForced = usePasswordUpdateRequired();
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // Check if this is a forced password update
-    const forcedUpdate = isPasswordUpdateRequired();
-    setIsForced(forcedUpdate);
-
-    const token = getAccessToken();
-
-    if (!forcedUpdate && !token) {
-      // If not forced and not authenticated, redirect to login
+    // If not forced and not authenticated, redirect to login.
+    if (!isForced && !getAccessToken()) {
       navigate("/login");
-      return;
     }
-
-    // Fetch current user
-    const fetchUser = async () => {
-      try {
-        const me = await getAuthMe();
-        if (me?.username) {
-          setUsername(me.username);
-        }
-      } catch (error) {
-        // ignore
-      }
-    };
-
-    if (token) {
-      fetchUser();
-    }
-  }, [navigate]);
+  }, [navigate, isForced]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
