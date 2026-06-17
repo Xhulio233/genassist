@@ -32,6 +32,7 @@ from .router_node import RouterNode
 from .set_state_node import SetStateNode
 from .slack_tool_node import SlackToolNode
 from .stt_node import STTNode
+from .teams_message_node import TeamsMessageNode
 from .sql_node import SQLNode
 from .thread_rag_node import ThreadRAGNode
 from .tool_builder_node import ToolBuilderNode
@@ -56,6 +57,7 @@ __all__ = [
     "DataMapperNode",
     "ToolBuilderNode",
     "SlackToolNode",
+    "TeamsMessageNode",
     "CalendarEventsNode",
     "ReadMailsToolNode",
     "GmailToolNode",

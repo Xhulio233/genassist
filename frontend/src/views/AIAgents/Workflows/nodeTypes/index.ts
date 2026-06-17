@@ -53,12 +53,14 @@ import GuardrailNliNode from "./utils/guardrailNliNode";
 import FileReaderNode from './utils/fileReaderNode';
 import SetStateNode from "./chat/setStateNode";
 import SlackOutputNode from "./integrations/slackOutputNode";
+import TeamsMessageNode from "./integrations/teamsMessageNode";
 import ZendeskTicketNode from "./integrations/zendeskTicketNode";
 import GmailNode from "./integrations/gmailNode";
 import {
   GMAIL_NODE_DEFINITION,
   ZENDESK_TICKET_NODE_DEFINITION,
   SLACK_OUTPUT_NODE_DEFINITION,
+  TEAMS_MESSAGE_NODE_DEFINITION,
   CALENDAR_EVENT_NODE_DEFINITION,
   READ_MAILS_NODE_DEFINITION,
   WHATSAPP_NODE_DEFINITION,
@@ -104,6 +106,8 @@ export const registerAllNodeTypes = () => {
   nodeRegistry.registerNodeType(CHAT_INPUT_NODE_DEFINITION);
 
   nodeRegistry.registerNodeType(SLACK_OUTPUT_NODE_DEFINITION);
+
+  nodeRegistry.registerNodeType(TEAMS_MESSAGE_NODE_DEFINITION);
 
   nodeRegistry.registerNodeType(CHAT_OUTPUT_NODE_DEFINITION);
 
@@ -169,6 +173,7 @@ export const getNodeTypes = () => {
     threadRAGNode: ThreadRAGNode,
 
     slackMessageNode: SlackOutputNode,
+    teamsMessageNode: TeamsMessageNode,
     whatsappToolNode: WhatsAppNode,
     zendeskTicketNode: ZendeskTicketNode,
     gmailNode: GmailNode,

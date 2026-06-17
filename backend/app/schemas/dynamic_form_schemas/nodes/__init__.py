@@ -12,6 +12,7 @@ from .knowledge_base_schema import KNOWLEDGE_BASE_NODE_DIALOG_SCHEMA
 from .data_mapper_schema import DATA_MAPPER_NODE_DIALOG_SCHEMA
 from .tool_builder_schema import TOOL_BUILDER_NODE_DIALOG_SCHEMA
 from .slack_output_schema import SLACK_OUTPUT_NODE_DIALOG_SCHEMA
+from .teams_message_schema import TEAMS_MESSAGE_NODE_DIALOG_SCHEMA
 from .calendar_event_tool_schema import CALENDAR_EVENT_TOOL_NODE_DIALOG_SCHEMA
 from .read_mails_schema import READ_MAILS_NODE_DIALOG_SCHEMA
 from .gmail_schema import GMAIL_NODE_DIALOG_SCHEMA
@@ -44,6 +45,7 @@ NODE_TYPE_LABELS: Dict[str, str] = {
     "dataMapperNode": "Data Mapper",
     "toolBuilderNode": "Tool Builder",
     "slackMessageNode": "Slack Message",
+    "teamsMessageNode": "Microsoft Teams",
     "calendarEventNode": "Calendar Event",
     "readMailsNode": "Read Mails",
     "gmailNode": "Gmail",
@@ -77,6 +79,7 @@ NODE_DIALOG_SCHEMAS: Dict[str, List[FieldSchema]] = {
     "dataMapperNode": DATA_MAPPER_NODE_DIALOG_SCHEMA,
     "toolBuilderNode": TOOL_BUILDER_NODE_DIALOG_SCHEMA,
     "slackMessageNode": SLACK_OUTPUT_NODE_DIALOG_SCHEMA,
+    "teamsMessageNode": TEAMS_MESSAGE_NODE_DIALOG_SCHEMA,
     "calendarEventNode": CALENDAR_EVENT_TOOL_NODE_DIALOG_SCHEMA,
     "readMailsNode": READ_MAILS_NODE_DIALOG_SCHEMA,
     "gmailNode": GMAIL_NODE_DIALOG_SCHEMA,
@@ -160,6 +163,11 @@ NODE_HANDLERS_SCHEMAS: Dict[str, List[FieldSchema]] = {
   ],
 
   "slackMessageNode": [
+    { "id": "input", "type": "target", "position": "left", "compatibility": "any" },
+    { "id": "output", "type": "source", "position": "right", "compatibility": "any" }
+  ],
+
+  "teamsMessageNode": [
     { "id": "input", "type": "target", "position": "left", "compatibility": "any" },
     { "id": "output", "type": "source", "position": "right", "compatibility": "any" }
   ],

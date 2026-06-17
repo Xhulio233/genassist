@@ -5,6 +5,7 @@ import {
   NodeTypeDefinition,
   ReadMailsNodeData,
   SlackOutputNodeData,
+  TeamsMessageNodeData,
   WhatsappNodeData,
   ZendeskTicketNodeData,
 } from "../../types/nodes";
@@ -13,6 +14,7 @@ import { GmailNodeData } from "../../types/nodes";
 import { NodeProps } from "reactflow";
 import ZendeskTicketNode from "./zendeskTicketNode";
 import SlackOutputNode from "./slackOutputNode";
+import TeamsMessageNode from "./teamsMessageNode";
 import WhatsAppNode from "./whatsappNode";
 import CalendarEventNode from "./calendarEventNode";
 import ReadMailsNode from "./readMailsNode";
@@ -23,6 +25,7 @@ import {
   EMAIL_SENDER_HELP_CONTENT,
   JIRA_TASK_CREATOR_HELP_CONTENT,
   SLACK_MESSENGER_HELP_CONTENT,
+  TEAMS_MESSENGER_HELP_CONTENT,
   WHATSAPP_MESSENGER_HELP_CONTENT,
   ZENDESK_TICKET_CREATOR_HELP_CONTENT,
 } from "./helperDefinition";
@@ -156,6 +159,51 @@ export const SLACK_OUTPUT_NODE_DEFINITION: NodeTypeDefinition<SlackOutputNodeDat
     createNode: (id, position, data) => ({
       id,
       type: "slackMessageNode",
+      position,
+      data: {
+        ...data,
+      },
+    }),
+  };
+
+export const TEAMS_MESSAGE_NODE_DEFINITION: NodeTypeDefinition<TeamsMessageNodeData> =
+  {
+    type: "teamsMessageNode",
+    label: "Microsoft Teams",
+    description: "Posts a message to a Microsoft Teams channel.",
+    shortDescription: "Send a Teams message",
+    helpContent: TEAMS_MESSENGER_HELP_CONTENT,
+    configSubtitle:
+      "Configure Microsoft Teams messaging, including the connector, team, channel, and message.",
+    category: "integrations",
+    icon: "Teams",
+    defaultData: {
+      name: "Microsoft Teams",
+      message: "",
+      team_id: "",
+      channel_id: "",
+      dataSourceId: "",
+      handlers: [
+        {
+          id: "input",
+          type: "target",
+          compatibility: "any",
+          position: "left",
+        },
+        {
+          id: "output",
+          type: "source",
+          compatibility: "any",
+          position: "right",
+        },
+      ],
+    },
+    component: TeamsMessageNode as React.ComponentType<
+      NodeProps<TeamsMessageNodeData>
+    >,
+    createNode: (id, position, data) => ({
+      id,
+      type: "teamsMessageNode",
       position,
       data: {
         ...data,

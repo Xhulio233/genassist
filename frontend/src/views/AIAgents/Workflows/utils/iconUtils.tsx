@@ -31,6 +31,7 @@ import {
 import SlackLogo from "@/assets/slack-logo.png";
 import WhatsAppLogo from "@/assets/whatsapp-logo.png";
 import JiraLogo from "@/assets/jira-logo.png";
+import MicrosoftTeamsLogo from "@/assets/microsoft-teams-logo.png";
 import ZendeskLogo from "@/assets/zendesk-logo.png";
 
 // Types for icon configuration
@@ -81,6 +82,7 @@ export const ICON_MAPPING: Record<string, IconConfig> = {
   MicVocal: { type: "lucide", source: MicVocal },
   Mic: { type: "lucide", source: Mic },
   Volume2: { type: "lucide", source: Volume2 },
+  Teams: { type: "asset", source: MicrosoftTeamsLogo },
   Workflow: { type: "lucide", source: GitBranch },
   GitBranch: { type: "lucide", source: GitBranch },
 

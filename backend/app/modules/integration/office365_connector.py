@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class Office365Connector:
+    # Default delegated Graph scopes used for SharePoint/Calendar flows.
+    DEFAULT_SCOPES = [
+        "https://graph.microsoft.com/Files.Read",
+        "https://graph.microsoft.com/Sites.Read.All",
+        "https://graph.microsoft.com/Calendars.ReadWrite",
+    ]
+
     def __init__(
         self,
         client_id: str,
@@ -25,7 +32,8 @@ class Office365Connector:
         site_id: str =None,
         drive_id: str = None,
         access_token: str = None,
-        for_sharepoint = True
+        for_sharepoint = True,
+        scopes: Optional[list[str]] = None,
 
     ):
         self.site_id = site_id
@@ -33,10 +41,14 @@ class Office365Connector:
         self.folder_path=""
         self.client_id = client_id
         self.client_secret = client_secret
-        self.tenant_id = tenant_id 
+        self.tenant_id = tenant_id
         self.refresh_token = refresh_token
         self.redirect_uri = redirect_uri
         self.sharepoint_url = sharepoint_url
+        # Scopes requested when redeeming the refresh token. Defaults preserve the
+        # existing SharePoint/Calendar behaviour; callers that need Teams messaging
+        # pass their own scope set (e.g. ChannelMessage.Send).
+        self.scopes = scopes or self.DEFAULT_SCOPES
         self.access_token = access_token or self.refresh_access_token()
         self.base_url = "https://graph.microsoft.com/v1.0"
         self.headers = {
@@ -58,11 +70,7 @@ class Office365Connector:
         
         result = auth_client.acquire_token_by_refresh_token(
             refresh_token=self.refresh_token,
-            scopes=[
-                "https://graph.microsoft.com/Files.Read",
-                "https://graph.microsoft.com/Sites.Read.All",
-                "https://graph.microsoft.com/Calendars.ReadWrite"
-            ]
+            scopes=self.scopes,
             )
 
         if "access_token" in result:
@@ -340,6 +348,43 @@ class Office365Connector:
         for e in events
         ]
 
+
+    async def send_channel_message(
+            self,
+            team_id: str,
+            channel_id: str,
+            message: str,
+            content_type: str = "html",
+            ) -> dict:
+        """
+        Post a message to a Microsoft Teams channel via Microsoft Graph.
+
+        Requires the delegated ``ChannelMessage.Send`` scope on the connected
+        Microsoft account (see Office365Connector(scopes=...)).
+        """
+        self._ensure_token()
+
+        url = f"{self.base_url}/teams/{team_id}/channels/{channel_id}/messages"
+        payload = {"body": {"contentType": content_type, "content": message}}
+
+        async with self._session() as client:
+            resp = await client.post(
+                    url,
+                    headers={**self.headers, "Content-Type": "application/json"},
+                    json=payload,
+                    )
+
+        if resp.status_code >= 300:
+            logger.error(
+                f"Failed to send Teams message: {resp.status_code} - {resp.text}"
+            )
+            raise AppException(
+                    error_key=ErrorKey.FAIL_SEND_TEAMS_MESSAGE,
+                    status_code=500,
+                    error_detail=resp.text,
+                    )
+
+        return resp.json()
 
     # ensure token helper
     def _ensure_token(self):

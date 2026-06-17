@@ -96,6 +96,7 @@ class ErrorKey(Enum):
     MISSING_DATA_SOURCE_ID = "MISSING_DATA_SOURCE_ID"
     TOO_MANY_RESULTS = "TOO_MANY_RESULTS"
     FAIL_SEARCH_EVENT_OFFICE_365 = "FAIL_SEARCH_EVENT_OFFICE_365"
+    FAIL_SEND_TEAMS_MESSAGE = "FAIL_SEND_TEAMS_MESSAGE"
     MISSING_PARAMETER = "MISSING_PARAMETER"
     PROVIDER_NOT_SUPPORTED = "PROVIDER_NOT_SUPPORTED"
     ID_CANT_BE_SPECIFIED = "ID_CANT_BE_SPECIFIED"
@@ -246,6 +247,7 @@ ERROR_MESSAGES = {
         ErrorKey.MISSING_DATA_SOURCE_ID: "Missing data source ID.",
         ErrorKey.TOO_MANY_RESULTS: "Too many results requested, maximum is 100.",
         ErrorKey.FAIL_SEARCH_EVENT_OFFICE_365: "Failed to search event with office 365.",
+        ErrorKey.FAIL_SEND_TEAMS_MESSAGE: "Failed to send Microsoft Teams message.",
         ErrorKey.MISSING_PARAMETER: "Missing parameter.",
         ErrorKey.PROVIDER_NOT_SUPPORTED: "The provider is not supported.",
         ErrorKey.ID_CANT_BE_SPECIFIED: "Cant specify id for new conversation.",

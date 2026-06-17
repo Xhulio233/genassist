@@ -71,6 +71,14 @@ export interface SlackOutputNodeData extends BaseNodeData {
   app_settings_id?: string; // ID of the app setting to use for this node
 }
 
+// Microsoft Teams message node data
+export interface TeamsMessageNodeData extends BaseNodeData {
+  dataSourceId: string; // ID of the o365 data source (holds the user's auth)
+  team_id: string; // target Microsoft Teams team/group ID
+  channel_id: string; // target channel ID within the team
+  message: string; // the message body to post
+}
+
 // Whatsapp Output Node Data
 export interface WhatsappNodeData extends BaseNodeData {
   recipient_number?: string;
@@ -498,6 +506,7 @@ export type NodeData =
   | PythonCodeNodeData
   | DataMapperNodeData
   | SlackOutputNodeData
+  | TeamsMessageNodeData
   | WhatsappNodeData
   | RouterNodeData
   | AggregatorNodeData

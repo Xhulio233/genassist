@@ -79,6 +79,39 @@ export const SLACK_MESSENGER_HELP_CONTENT: NodeHelpContent = {
   ],
 };
 
+export const TEAMS_MESSENGER_HELP_CONTENT: NodeHelpContent = {
+  intro:
+    "The Microsoft Teams node posts a message to a Teams channel directly from a workflow. It is ideal for internal alerts, escalations, and notifying teams about workflow events.",
+  sections: [
+    {
+      title: "Overview & Use Cases",
+      body: "Use the Microsoft Teams node when you need to:",
+      bullets: [
+        "Send automated messages to a Teams channel",
+        "Escalate conversations or detected issues to a team",
+        "Notify teams about workflow events",
+        "Support internal workflow communication",
+      ],
+    },
+    {
+      title: "Configuring the node",
+      steps: [
+        "Click the settings icon in the node header.",
+        "The Configure Microsoft Teams dialog will open.",
+        "Enter the Node Name.",
+        "Select the Microsoft (Office 365) Connector to authenticate with.",
+        "Enter the target Team ID and Channel ID.",
+        "Add the Message content to send.",
+        "Save the node configuration.",
+      ],
+    },
+    {
+      title: "Note",
+      body: "The connected Microsoft account must have consented to the ChannelMessage.Send permission. If messages fail to send, re-authorize the connector to grant Teams messaging access.",
+    },
+  ],
+};
+
 export const ZENDESK_TICKET_CREATOR_HELP_CONTENT: NodeHelpContent = {
   intro:
     "The Zendesk Ticket Creator node creates new Zendesk tickets from workflow data. It is useful for turning detected issues, requests, or support events into trackable support records.",
