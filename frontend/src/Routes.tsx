@@ -1,74 +1,158 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
-import { Outlet, RouterProvider } from "react-router-dom";
-import { createContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createBrowserRouter,
+  Navigate,
+  Outlet,
+  RouterProvider,
+} from "react-router-dom";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import ProtectedRoute from "@/layout/ProtectedRoute";
-import { Register } from "@/views/Register";
-import { ChangePassword, Login, LoginSsoCallback } from "@/views/Login";
-import Index from "@/views/Index";
-import Transcripts from "./views/Transcripts";
-import Operators from "./views/Operators";
-import Analytics from "@/views/Analytics";
-import AgentPerformancePage from "@/views/Analytics/pages/AgentPerformancePage";
-import NodeAnalyticsPage from "@/views/Analytics/pages/NodeAnalyticsPage";
-import ReportedFeedback from "@/views/ReportedFeedback/Index";
-import Notifications from "@/views/Notifications";
-import Settings from "./views/Settings";
-import NotFound from "@/views/NotFound";
-import Roles from "@/views/Roles/pages/Roles";
-import UserGroups from "@/views/UserGroups/Index";
-import Users from "./views/Users/Index";
-import GdprConversations from "./views/GdprConversations/Index";
-import UserTypes from "./views/UserTypes/pages/UserTypes";
-import ApiKeys from "./views/ApiKeys/pages/ApiKeys";
-import AppSettings from "./views/AppSettings/Index";
-import AIAgents from "./views/AIAgents/Index";
-import DataSources from "./views/DataSources/pages/DataSources";
-import AuditLogs from "@/views/AuditLogs";
-import Unauthorized from "@/views/Unauthorized";
-import LlmAnalyst from "@/views/LlmAnalyst/Index";
-import LLMProviders from "@/views/LlmProviders/Index";
-import AudioProviders from "@/views/AudioProviders/Index";
-import FineTune from "@/views/FineTune/Index";
-import FineTuneJobDetail from "@/views/FineTune/pages/FineTuneJobDetail";
-import LocalFineTune from "@/views/LocalFineTune/Index";
-import LocalFineTuneJobDetail from "@/views/LocalFineTune/pages/LocalFineTuneJobDetail";
-import Tools from "@/views/Tools/Index";
-import CreateTool from "@/views/Tools/pages/CreateTool";
-import KnowledgeBase from "@/views/KnowledgeBase/Index";
-import KnowledgeBaseForm from "@/views/KnowledgeBase/pages/KnowledgeBaseForm";
-import MLModels from "@/views/MLModels/Index";
-import MLModelDetail from "@/views/MLModels/components/MLModelDetail";
-import { FeatureFlags as FeatureFlagsPage } from "./views/Settings/pages/FeatureFlags";
-import { Translations } from "./views/Settings/pages/Translations";
-import { Languages } from "./views/Settings/pages/Languages";
-import { FileManagerFiles } from "./views/Settings/pages/FileManagerFiles";
-import { NotificationsSettings } from "./views/Settings/pages/Notifications";
 import { FeatureFlags as FeatureFlagKeys } from "@/config/featureFlags";
 import { useFeatureFlagVisible } from "@/components/featureFlag";
 import { GlobalChat } from "./components/GlobalChat";
 import ServerDownPage from "@/components/ServerDownPage";
-import { useServerStatus } from "@/context/ServerStatusContext";
-import { GmailOAuthCallback } from "./views/DataSources/components/GmailOAuthCallback";
-import { Office365OAuthCallback  } from "./views/DataSources/components/Office365OAuthCallback";
-import WebhookListPage from "@/views/Webhooks/pages/Webhooks";
-import HelpCenterIndex from "@/views/HelpCenter/Index";
-import NewTicketPage from "@/views/HelpCenter/pages/NewTicket";
-import TicketDetailPage from "@/views/HelpCenter/pages/TicketDetail";
-import MCPServersPage from "@/views/MCPServers/pages/MCPServers";
-import TestSuitesIndex from "@/views/TestSuites/Index";
-import DatasetsPage from "@/views/TestSuites/pages/DatasetsPage";
-import EvaluationsPage from "@/views/TestSuites/pages/EvaluationsPage";
-import DatasetDetailPage from "@/views/TestSuites/pages/DatasetDetailPage";
-import EvaluationDetailPage from "@/views/TestSuites/pages/EvaluationDetailPage";
-import Privacy from "@/views/Privacy";
 import ServerStatusBanner from "@/components/ServerStatusBanner";
-import Onboarding from "@/views/Onboarding/pages/Onboarding";
+import { useServerStatus } from "@/context/ServerStatusContext";
 import { getRegistrationStatus } from "@/services/registration";
 import { RoutesContext } from "@/context/RoutesContext";
 import { WebSocketDashboardProvider } from "@/context/WebSocketDashboardContext";
+import { storage } from "@/lib/storage";
 
-const getAccessToken = () =>
-  typeof window !== "undefined" ? localStorage.getItem("access_token") || "" : "";
+// --- Route pages, lazily loaded so each becomes its own bundle chunk fetched
+// only when its route is first visited — keeps the initial payload small. ---
+const Register = lazy(() =>
+  import("@/views/Register").then((m) => ({ default: m.Register }))
+);
+const Login = lazy(() =>
+  import("@/views/Login").then((m) => ({ default: m.Login }))
+);
+const ChangePassword = lazy(() =>
+  import("@/views/Login").then((m) => ({ default: m.ChangePassword }))
+);
+const LoginSsoCallback = lazy(() =>
+  import("@/views/Login").then((m) => ({ default: m.LoginSsoCallback }))
+);
+const Index = lazy(() => import("@/views/Index"));
+const Transcripts = lazy(() => import("./views/Transcripts"));
+const Operators = lazy(() => import("./views/Operators"));
+const Analytics = lazy(() => import("@/views/Analytics"));
+const AgentPerformancePage = lazy(
+  () => import("@/views/Analytics/pages/AgentPerformancePage")
+);
+const NodeAnalyticsPage = lazy(
+  () => import("@/views/Analytics/pages/NodeAnalyticsPage")
+);
+const ReportedFeedback = lazy(() => import("@/views/ReportedFeedback/Index"));
+const Notifications = lazy(() => import("@/views/Notifications"));
+const Settings = lazy(() => import("./views/Settings"));
+const NotFound = lazy(() => import("@/views/NotFound"));
+const Roles = lazy(() => import("@/views/Roles/pages/Roles"));
+const UserGroups = lazy(() => import("@/views/UserGroups/Index"));
+const Users = lazy(() => import("./views/Users/Index"));
+const GdprConversations = lazy(() => import("./views/GdprConversations/Index"));
+const UserTypes = lazy(() => import("./views/UserTypes/pages/UserTypes"));
+const ApiKeys = lazy(() => import("./views/ApiKeys/pages/ApiKeys"));
+const AppSettings = lazy(() => import("./views/AppSettings/Index"));
+const AIAgents = lazy(() => import("./views/AIAgents/Index"));
+const DataSources = lazy(() => import("./views/DataSources/pages/DataSources"));
+const AuditLogs = lazy(() => import("@/views/AuditLogs"));
+const Unauthorized = lazy(() => import("@/views/Unauthorized"));
+const LlmAnalyst = lazy(() => import("@/views/LlmAnalyst/Index"));
+const LLMProviders = lazy(() => import("@/views/LlmProviders/Index"));
+const AudioProviders = lazy(() => import("@/views/AudioProviders/Index"));
+const FineTune = lazy(() => import("@/views/FineTune/Index"));
+const FineTuneJobDetail = lazy(
+  () => import("@/views/FineTune/pages/FineTuneJobDetail")
+);
+const LocalFineTune = lazy(() => import("@/views/LocalFineTune/Index"));
+const LocalFineTuneJobDetail = lazy(
+  () => import("@/views/LocalFineTune/pages/LocalFineTuneJobDetail")
+);
+const Tools = lazy(() => import("@/views/Tools/Index"));
+const CreateTool = lazy(() => import("@/views/Tools/pages/CreateTool"));
+const KnowledgeBase = lazy(() => import("@/views/KnowledgeBase/Index"));
+const KnowledgeBaseForm = lazy(
+  () => import("@/views/KnowledgeBase/pages/KnowledgeBaseForm")
+);
+const MLModels = lazy(() => import("@/views/MLModels/Index"));
+const MLModelDetail = lazy(
+  () => import("@/views/MLModels/components/MLModelDetail")
+);
+const FeatureFlagsPage = lazy(() =>
+  import("./views/Settings/pages/FeatureFlags").then((m) => ({
+    default: m.FeatureFlags,
+  }))
+);
+const Translations = lazy(() =>
+  import("./views/Settings/pages/Translations").then((m) => ({
+    default: m.Translations,
+  }))
+);
+const Languages = lazy(() =>
+  import("./views/Settings/pages/Languages").then((m) => ({
+    default: m.Languages,
+  }))
+);
+const FileManagerFiles = lazy(() =>
+  import("./views/Settings/pages/FileManagerFiles").then((m) => ({
+    default: m.FileManagerFiles,
+  }))
+);
+const NotificationsSettings = lazy(() =>
+  import("./views/Settings/pages/Notifications").then((m) => ({
+    default: m.NotificationsSettings,
+  }))
+);
+const GmailOAuthCallback = lazy(() =>
+  import("./views/DataSources/components/GmailOAuthCallback").then((m) => ({
+    default: m.GmailOAuthCallback,
+  }))
+);
+const Office365OAuthCallback = lazy(() =>
+  import("./views/DataSources/components/Office365OAuthCallback").then((m) => ({
+    default: m.Office365OAuthCallback,
+  }))
+);
+const WebhookListPage = lazy(() => import("@/views/Webhooks/pages/Webhooks"));
+const HelpCenterIndex = lazy(() => import("@/views/HelpCenter/Index"));
+const NewTicketPage = lazy(() => import("@/views/HelpCenter/pages/NewTicket"));
+const TicketDetailPage = lazy(
+  () => import("@/views/HelpCenter/pages/TicketDetail")
+);
+const MCPServersPage = lazy(() => import("@/views/MCPServers/pages/MCPServers"));
+const TestSuitesIndex = lazy(() => import("@/views/TestSuites/Index"));
+const DatasetsPage = lazy(() => import("@/views/TestSuites/pages/DatasetsPage"));
+const EvaluationsPage = lazy(
+  () => import("@/views/TestSuites/pages/EvaluationsPage")
+);
+const DatasetDetailPage = lazy(
+  () => import("@/views/TestSuites/pages/DatasetDetailPage")
+);
+const EvaluationDetailPage = lazy(
+  () => import("@/views/TestSuites/pages/EvaluationDetailPage")
+);
+const Privacy = lazy(() => import("@/views/Privacy"));
+const Onboarding = lazy(() => import("@/views/Onboarding/pages/Onboarding"));
+
+const RouteFallback = () => (
+  <div className="min-h-screen flex items-center justify-center text-[#6b7280]">
+    Loading...
+  </div>
+);
+
+/** Wrap a route element in a Suspense boundary for lazy-loaded pages. */
+const withSuspense = (node: ReactNode) => (
+  <Suspense fallback={<RouteFallback />}>{node}</Suspense>
+);
+
+const getAccessToken = () => storage.getAccessToken() ?? "";
 
 const ProtectedLayout = () => {
   const { status, isOffline } = useServerStatus();
@@ -81,7 +165,9 @@ const ProtectedLayout = () => {
           <ServerDownPage />
         ) : (
           <>
-            <Outlet />
+            <Suspense fallback={<RouteFallback />}>
+              <Outlet />
+            </Suspense>
             <GlobalChat />
           </>
         )}
@@ -112,7 +198,7 @@ export const RoutesProvider = () => {
 
   useEffect(() => {
     // check if the user has skipped onboarding
-    const skipFlag = localStorage.getItem("skip_onboarding") === "true";
+    const skipFlag = storage.shouldSkipOnboarding();
     if (skipFlag) {
       setSkipOnboarding(true);
       setRegistrationStatus("existing");
@@ -523,17 +609,17 @@ export const RoutesProvider = () => {
             },
           ],
         },
-        { path: "login", element: (<><ServerStatusBanner /><Login /></>) },
-        { path: "login/sso-callback", element: (<><ServerStatusBanner /><LoginSsoCallback /></>) },
-        { path: "register", element: <Register /> },
-        { path: "privacy", element: <Privacy /> },
+        { path: "login", element: withSuspense(<><ServerStatusBanner /><Login /></>) },
+        { path: "login/sso-callback", element: withSuspense(<><ServerStatusBanner /><LoginSsoCallback /></>) },
+        { path: "register", element: withSuspense(<Register />) },
+        { path: "privacy", element: withSuspense(<Privacy />) },
         {
               path: "onboarding",
-              element: <Onboarding />,
+              element: withSuspense(<Onboarding />),
             },
-        { path: "unauthorized", element: <Unauthorized /> },
-        { path: "office365/oauth/callback", element: <Office365OAuthCallback />},
-        { path: "*", element: <NotFound /> }
+        { path: "unauthorized", element: withSuspense(<Unauthorized />) },
+        { path: "office365/oauth/callback", element: withSuspense(<Office365OAuthCallback />)},
+        { path: "*", element: withSuspense(<NotFound />) }
       ]),
     [showLocalFineTune],
   );
@@ -541,7 +627,7 @@ export const RoutesProvider = () => {
   const organizationRouter = useMemo(
     () =>
       createBrowserRouter([
-        { path: "onboarding", element: <Onboarding /> },
+        { path: "onboarding", element: withSuspense(<Onboarding />) },
         { path: "*", element: <Navigate to="/onboarding" replace /> },
       ]),
     [],

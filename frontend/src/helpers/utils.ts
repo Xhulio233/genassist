@@ -1,10 +1,8 @@
 import { getApiUrlString } from "@/config/api";
-import { clsx, type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
-}
+// `cn` is defined in @/lib/utils (the shadcn-canonical path) and re-exported
+// here so the many call sites importing it from @/helpers/utils keep working
+// against a single underlying implementation.
+export { cn } from "@/lib/utils";
 
 export function formatDate(date: string | Date): string {
   const d = new Date(date);
