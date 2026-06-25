@@ -234,8 +234,12 @@ export const SecurityPanel = ({
       }
       setGcpSvcAccountFile(null);
       setGcpSvcAccountFileName("");
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to save security settings");
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to save security settings"
+      );
     } finally {
       setSaving(false);
     }

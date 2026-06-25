@@ -106,8 +106,8 @@ export default function ChatAsCustomer() {
           setWebsocketUrl(websocketUrl);
         })
 
-      } catch (err: any) {
-        setError(err.message || "Failed to initialize chat");
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Failed to initialize chat");
         setTimeout(() => navigate("/ai-agents"), 2000);
       }
     })();

@@ -37,6 +37,17 @@ const SERIES = [
   { key: "efficiency", color: "#06b6d4" },
 ] as const;
 
+// Chart chrome colors kept alongside the series palette so no color literal
+// lives inline in the JSX below.
+const CHART_AXIS_TICK_COLOR = "#666";
+const CHART_TOOLTIP_STYLE = {
+  backgroundColor: "#fff",
+  border: "none",
+  borderRadius: "8px",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+  fontSize: "12px",
+} as const;
+
 function formatDateLabel(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -111,25 +122,19 @@ export const PerformanceChart = ({ dateRange, agentId, groupId }: PerformanceCha
                 dataKey="name"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: "#666", fontSize: 10, dy: 10 }}
+                tick={{ fill: CHART_AXIS_TICK_COLOR, fontSize: 10, dy: 10 }}
                 interval="preserveStartEnd"
               />
               <YAxis
                 domain={[0, 100]}
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: "#666", fontSize: 10 }}
+                tick={{ fill: CHART_AXIS_TICK_COLOR, fontSize: 10 }}
                 width={35}
                 tickFormatter={(value) => `${value}%`}
               />
               <Tooltip
-                contentStyle={{
-                  backgroundColor: "#fff",
-                  border: "none",
-                  borderRadius: "8px",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                  fontSize: "12px",
-                }}
+                contentStyle={CHART_TOOLTIP_STYLE}
                 formatter={(value: number, name: string) => [`${value}%`, LABELS[name] ?? name]}
               />
               <Legend

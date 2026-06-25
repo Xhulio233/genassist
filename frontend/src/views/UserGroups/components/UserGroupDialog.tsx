@@ -11,6 +11,7 @@ import { Label } from "@/components/label";
 import { Button } from "@/components/button";
 import { Loader2 } from "lucide-react";
 import { toast } from "react-hot-toast";
+import axios from "axios";
 import { UserGroup } from "@/interfaces/userGroup.interface";
 import { createUserGroup, updateUserGroup } from "@/services/userGroups";
 
@@ -79,8 +80,8 @@ export function UserGroupDialog({
       }
 
       onOpenChange(false);
-    } catch (err: any) {
-      const data = err?.response?.data;
+    } catch (err: unknown) {
+      const data = axios.isAxiosError(err) ? err.response?.data : undefined;
       const errorMessage = data?.error ?? data?.detail ?? null;
       toast.error(
         `Failed to ${dialogMode === "create" ? "create" : "update"} user group${errorMessage ? `: ${errorMessage}` : "."}`

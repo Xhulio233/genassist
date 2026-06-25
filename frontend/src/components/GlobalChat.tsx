@@ -3,6 +3,16 @@ import { useEffect, useState } from "react";
 import { getApiUrl, getWsUrl } from "@/config/api";
 import { isWsEnabled, isPollEnabled } from "@/config/api";
 
+// Theme passed to the third-party chat widget. `primaryColor` mirrors the brand
+// primary token (--primary / --brand-600 = hsl(229 86% 51%)) defined in index.css.
+const GLOBAL_CHAT_THEME = {
+  primaryColor: "#173DED",
+  backgroundColor: "#ffffff",
+  textColor: "#000000",
+  fontFamily: "Roboto, Arial, sans-serif",
+  fontSize: "14px",
+} as const;
+
 export const GlobalChat = () => {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [websocketUrl, setWebsocketUrl] = useState<string | undefined>(undefined);
@@ -38,13 +48,7 @@ export const GlobalChat = () => {
       apiKey={genassistApiKey}
       // tenant={tenantId}
       headerTitle="Genassist Chat"
-      theme={{
-        primaryColor: "#173DED",
-        backgroundColor: "#ffffff",
-        textColor: "#000000",
-        fontFamily: "Roboto, Arial, sans-serif",
-        fontSize: "14px",
-      }}
+      theme={GLOBAL_CHAT_THEME}
       useWs={isWsEnabled}
       mode="floating"
       floatingConfig={{

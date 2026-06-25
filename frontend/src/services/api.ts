@@ -110,7 +110,7 @@ export async function getAgentConfig(id: string): Promise<AgentConfig> {
   return apiRequest<AgentConfig>("GET", `genagent/agents/configs/${id}`);
 }
 
-export async function getIntegrationConfig(agentId: string) {
+export async function getIntegrationConfig(agentId: string): Promise<unknown> {
   return apiRequest("GET", `genagent/agents/${agentId}/integration`);
 }
 
@@ -158,7 +158,7 @@ export async function updateAgentConfig(
   );
 }
 
-export async function deleteAgentConfig(id: string) {
+export async function deleteAgentConfig(id: string): Promise<unknown> {
   return apiRequest("DELETE", `genagent/agents/configs/${id}`);
 }
 
@@ -215,7 +215,7 @@ export async function deleteWelcomeImage(
 }
 
 // Agent operations
-export async function initializeAgent(id: string) {
+export async function initializeAgent(id: string): Promise<unknown> {
   return apiRequest("POST", `genagent/agents/switch/${id}`);
 }
 
@@ -223,14 +223,14 @@ export async function queryAgent(
   agentId: string,
   threadId: string,
   query: string
-) {
+): Promise<unknown> {
   return apiRequest("POST", `genagent/agents/${agentId}/query/${threadId}`, {
     query,
   });
 }
 
 // Knowledge base endpoints
-export async function getAllKnowledgeItems() {
+export async function getAllKnowledgeItems(): Promise<unknown> {
   return apiRequest("GET", "genagent/knowledge/items");
 }
 
@@ -245,22 +245,22 @@ export async function getKnowledgeItemsList(
   );
 }
 
-export async function getKnowledgeItem(id: string) {
+export async function getKnowledgeItem(id: string): Promise<unknown> {
   return apiRequest("GET", `genagent/knowledge/items/${id}`);
 }
 
-export async function createKnowledgeItem(item: KnowledgeItem) {
+export async function createKnowledgeItem(item: KnowledgeItem): Promise<unknown> {
   return apiRequest("POST", "genagent/knowledge/items", item);
 }
 
-export async function updateKnowledgeItem(id: string, item: KnowledgeItem) {
+export async function updateKnowledgeItem(id: string, item: KnowledgeItem): Promise<unknown> {
   return apiRequest("PUT", `genagent/knowledge/items/${id}`, item);
 }
 
-export async function deleteKnowledgeItem(id: string) {
+export async function deleteKnowledgeItem(id: string): Promise<unknown> {
   return apiRequest("DELETE", `genagent/knowledge/items/${id}`);
 }
-export async function finalizeKnowledgeItem(id: string) {
+export async function finalizeKnowledgeItem(id: string): Promise<unknown> {
   return apiRequest("POST", `genagent/knowledge/finalize/${id}`);
 }
 
@@ -607,7 +607,9 @@ export const uploadFiles = async (
 };
 
 // Endpoint to trigger KB synchronization execution MANUALLY
-export const executeKnowledgeBaseSyncronizationManually = async (kbId: string) => {
+export const executeKnowledgeBaseSyncronizationManually = async (
+  kbId: string
+): Promise<unknown> => {
   return apiRequest(
     "GET",
     `genagent/knowledge/kb-batch-tasks-execution?kb_id=${kbId}`
@@ -615,30 +617,30 @@ export const executeKnowledgeBaseSyncronizationManually = async (kbId: string) =
 };
 
 // Tools endpoints
-export async function getAllTools() {
+export async function getAllTools(): Promise<unknown> {
   return apiRequest("GET", "genagent/tools");
 }
 
-export async function getTool(id: string) {
+export async function getTool(id: string): Promise<unknown> {
   return apiRequest("GET", `genagent/tools/${id}`);
 }
 
-export async function createTool(tool: Tool) {
+export async function createTool(tool: Tool): Promise<unknown> {
   return apiRequest("POST", "genagent/tools", tool);
 }
 
-export async function updateTool(id: string, tool: Tool) {
+export async function updateTool(id: string, tool: Tool): Promise<unknown> {
   return apiRequest("PUT", `genagent/tools/${id}`, tool);
 }
 
-export async function deleteTool(id: string) {
+export async function deleteTool(id: string): Promise<unknown> {
   return apiRequest("DELETE", `genagent/tools/${id}`);
 }
 
 export async function testPythonCode(
   code: string,
   params: Record<string, unknown>
-) {
+): Promise<unknown> {
   return apiRequest("POST", "genagent/tools/python/test", {
     code,
     params,
@@ -647,13 +649,15 @@ export async function testPythonCode(
 
 export async function generatePythonTemplate(
   parametersSchema: ParametersSchema
-) {
+): Promise<unknown> {
   return apiRequest("POST", "genagent/tools/python/generate-template", {
     parameters_schema: parametersSchema,
   });
 }
 
-export async function generatePythonTemplateFromTool(toolId: string) {
+export async function generatePythonTemplateFromTool(
+  toolId: string
+): Promise<unknown> {
   return apiRequest(
     "GET",
     `genagent/tools/python/template-from-tool/${toolId}`
@@ -664,7 +668,7 @@ export async function testPythonCodeWithSchema(
   code: string,
   params: Record<string, unknown>,
   parametersSchema: ParametersSchema
-) {
+): Promise<unknown> {
   return apiRequest("POST", "genagent/tools/python/test-with-schema", {
     code,
     params,

@@ -180,7 +180,7 @@ export default function CreateTool() {
           "Failed to generate template: Backend did not return 'template'"
         );
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(
         `Failed to generate template: ${
           err instanceof Error ? err.message : String(err)
@@ -235,8 +235,8 @@ export default function CreateTool() {
       }
       setTestResult(pieces.join(""));
       setSuccess("Code tested successfully");
-    } catch (err: any) {
-      setError(err.message || "Test failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Test failed");
     } finally {
       setTestingCode(false);
     }
@@ -297,8 +297,8 @@ export default function CreateTool() {
         toast.success("Tool created successfully.");
       }
       navigate("/tools");
-    } catch (err: any) {
-      setError(err.message || "Failed to save tool");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save tool");
       toast.error("Failed to save tool.");
     } finally {
       setSubmitting(false);
