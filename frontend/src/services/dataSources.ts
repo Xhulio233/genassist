@@ -202,16 +202,11 @@ export const createTempOffice365DataSource = async (
 /** What an Office365 connection is allowed to do, mapped to the delegated Graph scopes each needs. */
 export type Office365Capability = "teams" | "calendar" | "mail" | "sharepoint";
 
-// Only "sharepoint" (Sites.Read.All) requires ADMIN consent — Microsoft reclassified
-// Sites.Read.All as admin-consent-required in July 2025. The rest stay user-consentable,
-// so a connection only forces admin approval when SharePoint access is selected.
-// These must stay in sync with Office365Connector.*_SCOPES on the backend, which
-// redeems the refresh token for the matching scopes per node.
 export const OFFICE365_CAPABILITY_SCOPES: Record<Office365Capability, string[]> = {
   teams: ["ChannelMessage.Send"],
   calendar: ["Calendars.ReadWrite"],
   mail: ["Mail.Read", "Mail.Send"],
-  sharepoint: ["Files.Read", "Sites.Read.All"],
+  sharepoint: ["Files.Read", "Sites.Selected"],
 };
 
 /** Capability that pulls in an admin-consent-required scope. */
