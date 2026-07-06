@@ -159,6 +159,9 @@ class CalendarEventsNode(BaseNode):
             tenant_id=tenant_id,
             refresh_token=data_src.connection_data["refresh_token"],
             redirect_uri=data_src.connection_data["redirect_uri"],
+            # Only request the Calendar scope so a calendar-only connection (which
+            # never consented to Sites.Read.All) can redeem its refresh token.
+            scopes=Office365Connector.CALENDAR_SCOPES,
         )
 
         if op == "create_calendar_event":

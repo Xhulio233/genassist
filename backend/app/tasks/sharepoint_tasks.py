@@ -149,6 +149,9 @@ async def import_sharepoint_files_to_kb_async(kb_id: Optional[UUID] = None):
                     client_secret=o365_client_secret,
                     refresh_token=conn_data["refresh_token"],
                     redirect_uri=conn_data["redirect_uri"],
+                    # SharePoint needs Files.Read + Sites.Read.All only; don't drag in
+                    # Calendars.ReadWrite so a SharePoint-only connection can redeem.
+                    scopes=Office365Connector.SHAREPOINT_SCOPES,
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize SharePoint client: {e}")

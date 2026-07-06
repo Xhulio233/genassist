@@ -139,7 +139,7 @@ APP_SETTINGS_SCHEMAS: Dict[str, TypeSchema] = {
                 required=True,
                 placeholder="Enter Microsoft Client Secret",
                 description="Microsoft OAuth Client Secret",
-                encrypted=False,
+                encrypted=True,
             ),
             FieldSchema(
                 name="microsoft_tenant_id",

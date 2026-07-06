@@ -199,15 +199,53 @@ export const createTempOffice365DataSource = async (
   }
 };
 
+/** What an Office365 connection is allowed to do, mapped to the delegated Graph scopes each needs. */
+export type Office365Capability = "teams" | "calendar" | "mail" | "sharepoint";
+
+// Only "sharepoint" (Sites.Read.All) requires ADMIN consent — Microsoft reclassified
+// Sites.Read.All as admin-consent-required in July 2025. The rest stay user-consentable,
+// so a connection only forces admin approval when SharePoint access is selected.
+// These must stay in sync with Office365Connector.*_SCOPES on the backend, which
+// redeems the refresh token for the matching scopes per node.
+export const OFFICE365_CAPABILITY_SCOPES: Record<Office365Capability, string[]> = {
+  teams: ["ChannelMessage.Send"],
+  calendar: ["Calendars.ReadWrite"],
+  mail: ["Mail.Read", "Mail.Send"],
+  sharepoint: ["Files.Read", "Sites.Read.All"],
+};
+
+/** Capability that pulls in an admin-consent-required scope. */
+export const OFFICE365_ADMIN_CONSENT_CAPABILITIES: Office365Capability[] = ["sharepoint"];
+
+/** Resolve selected capabilities to a de-duplicated, space-joined Graph scope string. */
+export function office365ScopeString(capabilities: Office365Capability[]): string {
+  const base = ["offline_access", "User.Read"];
+  const selected = capabilities.flatMap((c) => OFFICE365_CAPABILITY_SCOPES[c] ?? []);
+  return Array.from(new Set([...base, ...selected])).join(" ");
+}
+
+/**
+ * Infer which capabilities a previously-connected data source was granted, by matching
+ * the persisted `scope` string. Used to pre-select checkboxes on reauthorize.
+ */
+export function inferOffice365Capabilities(scope?: string): Office365Capability[] {
+  if (!scope) return [];
+  return (Object.keys(OFFICE365_CAPABILITY_SCOPES) as Office365Capability[]).filter((cap) =>
+    OFFICE365_CAPABILITY_SCOPES[cap].every((s) => scope.includes(s))
+  );
+}
+
 export function buildOffice365OAuthUrl(
   clientId: string,
   tenantId: string,
-  dataSourceId: string
+  dataSourceId: string,
+  capabilities: Office365Capability[]
 ): string {
   const redirectUri = encodeURIComponent(
     `${window.location.origin}/office365/oauth/callback`
   );
   const state = encodeURIComponent(dataSourceId);
+  const scope = encodeURIComponent(office365ScopeString(capabilities));
 
   return (
     `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize` +
@@ -215,7 +253,7 @@ export function buildOffice365OAuthUrl(
     `&response_type=code` +
     `&redirect_uri=${redirectUri}` +
     `&response_mode=query` +
-    `&scope=offline_access%20User.Read%20Mail.Send%20Mail.Read%20Files.Read%20Sites.Read.All%20Calendars.ReadWrite` +
+    `&scope=${scope}` +
     `&state=${state}` +
     `&prompt=consent`
   );

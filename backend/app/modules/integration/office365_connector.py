@@ -14,12 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 class Office365Connector:
-    # Default delegated Graph scopes used for SharePoint/Calendar flows.
-    DEFAULT_SCOPES = [
+    # Delegated Graph scopes grouped by feature so each caller requests only what it
+    # needs. This keeps a connection user-consentable unless it truly needs SharePoint:
+    # Microsoft reclassified Sites.Read.All as admin-consent-required (July 2025), so
+    # bundling it with everything else forced admin approval on every connection.
+    SHAREPOINT_SCOPES = [
         "https://graph.microsoft.com/Files.Read",
         "https://graph.microsoft.com/Sites.Read.All",
-        "https://graph.microsoft.com/Calendars.ReadWrite",
     ]
+    CALENDAR_SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite"]
+    TEAMS_SCOPES = ["https://graph.microsoft.com/ChannelMessage.Send"]
+    MAIL_SCOPES = [
+        "https://graph.microsoft.com/Mail.Read",
+        "https://graph.microsoft.com/Mail.Send",
+    ]
+    # Backwards-compatible fallback (SharePoint + Calendar) for callers that don't
+    # pass scopes explicitly; matches the previous default set.
+    DEFAULT_SCOPES = SHAREPOINT_SCOPES + CALENDAR_SCOPES
 
     def __init__(
         self,

@@ -4,11 +4,15 @@ import { Button } from "@/components/button";
 import { Alert, AlertDescription } from "@/components/alert";
 import { Badge } from "@/components/badge";
 import { Label } from "@/components/label";
-import { Mail, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { Mail, AlertCircle, CheckCircle, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "react-hot-toast";
+import { Checkbox } from "@/components/checkbox";
 import {
   createTempOffice365DataSource,
   buildOffice365OAuthUrl,
+  inferOffice365Capabilities,
+  OFFICE365_ADMIN_CONSENT_CAPABILITIES,
+  type Office365Capability,
 } from "@/services/dataSources";
 import { DataSource } from "@/interfaces/dataSource.interface";
 import {
@@ -29,6 +33,25 @@ interface Office365ConnectionProps {
   onDataSourceCreated?: (id: string) => void;
 }
 
+// The access this connection grants. Only SharePoint pulls in an admin-consent-required
+// scope (Sites.Read.All), so selecting only the others keeps the connection self-service.
+const CAPABILITY_OPTIONS: {
+  id: Office365Capability;
+  label: string;
+  description: string;
+}[] = [
+  { id: "teams", label: "Teams messaging", description: "Post messages to Teams channels" },
+  { id: "calendar", label: "Calendar", description: "Create and read calendar events" },
+  { id: "mail", label: "Mail", description: "Read and send email" },
+  {
+    id: "sharepoint",
+    label: "SharePoint files",
+    description: "Read SharePoint sites and files (requires admin approval)",
+  },
+];
+
+const DEFAULT_CAPABILITIES: Office365Capability[] = ["teams", "calendar", "mail"];
+
 export function Office365Connection({
   dataSource,
   dataSourceName,
@@ -41,6 +64,21 @@ export function Office365Connection({
   const [isLoadingAppSettings, setIsLoadingAppSettings] = useState(false);
   const [isCreateSettingOpen, setIsCreateSettingOpen] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [capabilities, setCapabilities] = useState<Office365Capability[]>(() => {
+    const existing = inferOffice365Capabilities(
+      dataSource?.connection_data.scope as string | undefined
+    );
+    return existing.length ? existing : DEFAULT_CAPABILITIES;
+  });
+
+  const requiresAdminConsent = capabilities.some((c) =>
+    OFFICE365_ADMIN_CONSENT_CAPABILITIES.includes(c)
+  );
+
+  const toggleCapability = (id: Office365Capability) =>
+    setCapabilities((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
+    );
 
   const isConnected = dataSource?.connection_data.user_email;
   const isPending = dataSource?.oauth_status === "pending";
@@ -67,6 +105,11 @@ export function Office365Connection({
       (dataSource?.connection_data.app_settings_id as string) || ""
     );
 
+    const existing = inferOffice365Capabilities(
+      dataSource?.connection_data.scope as string | undefined
+    );
+    setCapabilities(existing.length ? existing : DEFAULT_CAPABILITIES);
+
     fetchAppSettings();
   }, [dataSource]);
 
@@ -78,6 +121,11 @@ export function Office365Connection({
 
     if (!appSettingsId) {
       toast.error("Configuration variables are required.");
+      return;
+    }
+
+    if (capabilities.length === 0) {
+      toast.error("Select at least one access type to grant.");
       return;
     }
 
@@ -98,7 +146,12 @@ export function Office365Connection({
         onDataSourceCreated?.(datasourceId);
       }
 
-      const oauthUrl = buildOffice365OAuthUrl(clientId, tenantId, datasourceId);
+      const oauthUrl = buildOffice365OAuthUrl(
+        clientId,
+        tenantId,
+        datasourceId,
+        capabilities
+      );
       window.location.href = oauthUrl;
     } catch (error) {
       toast.error("Failed to initiate Office 365 connection.");
@@ -195,6 +248,45 @@ export function Office365Connection({
             <CreateNewSelectItem />
           </SelectContent>
         </Select>
+      </div>
+
+      {/* Access selection — request only the scopes needed so the connection stays
+          self-service unless SharePoint (admin-consent-required) is included. */}
+      <div className="space-y-2">
+        <Label>
+          Access <span className="text-red-500">*</span>
+        </Label>
+        <div className="space-y-2">
+          {CAPABILITY_OPTIONS.map((option) => (
+            <label
+              key={option.id}
+              htmlFor={`o365-cap-${option.id}`}
+              className="flex items-start gap-2 cursor-pointer"
+            >
+              <Checkbox
+                id={`o365-cap-${option.id}`}
+                checked={capabilities.includes(option.id)}
+                onCheckedChange={() => toggleCapability(option.id)}
+                className="mt-0.5"
+              />
+              <div className="leading-tight">
+                <div className="text-sm font-medium">{option.label}</div>
+                <div className="text-xs text-muted-foreground">
+                  {option.description}
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+        {requiresAdminConsent && (
+          <Alert>
+            <ShieldAlert className="h-4 w-4" />
+            <AlertDescription>
+              SharePoint access requires Microsoft admin approval. A tenant
+              administrator may need to grant consent before this connection works.
+            </AlertDescription>
+          </Alert>
+        )}
       </div>
 
       <Button

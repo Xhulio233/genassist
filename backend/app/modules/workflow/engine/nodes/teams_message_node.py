@@ -20,9 +20,6 @@ from ..base_node import BaseNode
 
 logger = logging.getLogger(__name__)
 
-# Delegated Graph scope required to post a channel message as the connected user.
-TEAMS_SCOPES = ["https://graph.microsoft.com/ChannelMessage.Send"]
-
 
 class TeamsMessageNode(BaseNode):
     """Processor for sending Microsoft Teams channel messages using the BaseNode approach."""
@@ -102,7 +99,8 @@ class TeamsMessageNode(BaseNode):
                 tenant_id=tenant_id,
                 refresh_token=connection_data["refresh_token"],
                 redirect_uri=connection_data.get("redirect_uri"),
-                scopes=TEAMS_SCOPES,
+                # Delegated scope to post a channel message as the connected user.
+                scopes=Office365Connector.TEAMS_SCOPES,
             )
 
             result = await connector.send_channel_message(
