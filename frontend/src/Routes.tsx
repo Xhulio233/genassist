@@ -10,6 +10,7 @@ import Operators from "./views/Operators";
 import Analytics from "@/views/Analytics";
 import AgentPerformancePage from "@/views/Analytics/pages/AgentPerformancePage";
 import NodeAnalyticsPage from "@/views/Analytics/pages/NodeAnalyticsPage";
+import ReportedFeedback from "@/views/ReportedFeedback/Index";
 import Notifications from "@/views/Notifications";
 import Settings from "./views/Settings";
 import NotFound from "@/views/NotFound";
@@ -26,6 +27,7 @@ import AuditLogs from "@/views/AuditLogs";
 import Unauthorized from "@/views/Unauthorized";
 import LlmAnalyst from "@/views/LlmAnalyst/Index";
 import LLMProviders from "@/views/LlmProviders/Index";
+import FallbackChains from "@/views/FallbackChains/Index";
 import AudioProviders from "@/views/AudioProviders/Index";
 import FineTune from "@/views/FineTune/Index";
 import FineTuneJobDetail from "@/views/FineTune/pages/FineTuneJobDetail";
@@ -42,6 +44,7 @@ import { Translations } from "./views/Settings/pages/Translations";
 import { Languages } from "./views/Settings/pages/Languages";
 import { FileManagerFiles } from "./views/Settings/pages/FileManagerFiles";
 import { NotificationsSettings } from "./views/Settings/pages/Notifications";
+import { Maintenance } from "./views/Settings/pages/Maintenance";
 import { FeatureFlags as FeatureFlagKeys } from "@/config/featureFlags";
 import { useFeatureFlagVisible } from "@/components/featureFlag";
 import { GlobalChat } from "./components/GlobalChat";
@@ -50,6 +53,9 @@ import { useServerStatus } from "@/context/ServerStatusContext";
 import { GmailOAuthCallback } from "./views/DataSources/components/GmailOAuthCallback";
 import { Office365OAuthCallback  } from "./views/DataSources/components/Office365OAuthCallback";
 import WebhookListPage from "@/views/Webhooks/pages/Webhooks";
+import HelpCenterIndex from "@/views/HelpCenter/Index";
+import NewTicketPage from "@/views/HelpCenter/pages/NewTicket";
+import TicketDetailPage from "@/views/HelpCenter/pages/TicketDetail";
 import MCPServersPage from "@/views/MCPServers/pages/MCPServers";
 import TestSuitesIndex from "@/views/TestSuites/Index";
 import DatasetsPage from "@/views/TestSuites/pages/DatasetsPage";
@@ -176,6 +182,14 @@ export const RoutesProvider = () => {
               ),
             },
             {
+              path: "reported-feedback",
+              element: (
+                <ProtectedRoute requiredPermissions={["read:conversation"]}>
+                  <ReportedFeedback />
+                </ProtectedRoute>
+              ),
+            },
+            {
               path: "notifications",
               element: <Notifications />,
             },
@@ -218,6 +232,14 @@ export const RoutesProvider = () => {
             {
               path: "settings/notifications",
               element: <NotificationsSettings />,
+            },
+            {
+              path: "settings/maintenance",
+              element: (
+                <ProtectedRoute requiredPermissions={["write:app_settings"]}>
+                  <Maintenance />
+                </ProtectedRoute>
+              ),
             },
             {
               path: "users",
@@ -264,6 +286,14 @@ export const RoutesProvider = () => {
               element: (
                 <ProtectedRoute requiredPermissions={["read:llm_provider"]}>
                   <LLMProviders />
+                </ProtectedRoute>
+              ),
+            },
+            {
+              path: "fallback-chains",
+              element: (
+                <ProtectedRoute requiredPermissions={["read:llm_provider"]}>
+                  <FallbackChains />
                 </ProtectedRoute>
               ),
             },
@@ -482,6 +512,18 @@ export const RoutesProvider = () => {
                   <WebhookListPage />
                 </ProtectedRoute>
               ),
+            },
+            {
+              path: "help-center",
+              element: <HelpCenterIndex />,
+            },
+            {
+              path: "help-center/new",
+              element: <NewTicketPage />,
+            },
+            {
+              path: "help-center/:ticketId",
+              element: <TicketDetailPage />,
             },
             {
               path: "mcp-servers",

@@ -24,7 +24,9 @@ from app.modules.workflow.engine.nodes import (
     ChatOutputNode,
     DataMapperNode,
     FileReaderNode,
+    FinalizeConversationNode,
     GmailToolNode,
+    CreateWorkflowScheduleNode,
     GuardrailNliNode,
     GuardrailProvenanceNode,
     HumanInTheLoopNode,
@@ -37,6 +39,7 @@ from app.modules.workflow.engine.nodes import (
     PythonToolNode,
     ReadMailsToolNode,
     RouterNode,
+    SalesforceToolNode,
     SetStateNode,
     SlackToolNode,
     SQLNode,
@@ -105,6 +108,7 @@ class WorkflowEngine:
         cls._node_registry["templateNode"] = TemplateNode
         cls._node_registry["llmModelNode"] = LLMModelNode
         cls._node_registry["knowledgeBaseNode"] = KnowledgeToolNode
+        cls._node_registry["createWorkflowScheduleNode"] = CreateWorkflowScheduleNode
         cls._node_registry["pythonCodeNode"] = PythonToolNode
         cls._node_registry["dataMapperNode"] = DataMapperNode
         cls._node_registry["toolBuilderNode"] = ToolBuilderNode
@@ -115,6 +119,7 @@ class WorkflowEngine:
         cls._node_registry["gmailNode"] = GmailToolNode
         cls._node_registry["whatsappToolNode"] = WhatsAppToolNode
         cls._node_registry["zendeskTicketNode"] = ZendeskToolNode
+        cls._node_registry["salesforceCaseNode"] = SalesforceToolNode
         cls._node_registry["sqlNode"] = SQLNode
         cls._node_registry["aggregatorNode"] = AggregatorNode
         cls._node_registry["jiraNode"] = JiraNode
@@ -133,6 +138,7 @@ class WorkflowEngine:
         cls._node_registry["ttsNode"] = TTSNode
         cls._node_registry["sttNode"] = STTNode
         cls._node_registry["voiceAgentNode"] = VoiceAgentNode
+        cls._node_registry["finalizeConversationNode"] = FinalizeConversationNode
 
         cls._registry_initialized = True
         logger.debug(f"Initialized node registry with {len(cls._node_registry)} node types")

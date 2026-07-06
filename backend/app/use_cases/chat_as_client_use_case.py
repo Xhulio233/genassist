@@ -25,6 +25,7 @@ from app.services.agent_config import AgentConfigService
 from app.services.agent_response_log import AgentResponseLogService
 from app.services.analytics_realtime import update_stats_incrementally
 from app.services.conversations import ConversationService
+from app.services.translations import TranslationsService
 from app.core.utils.custom_attributes import extract_custom_attributes
 from app.modules.workflow.engine.pii_anonymizer import PIIAnonymizer
 from app.services.file_manager import FileManagerService
@@ -38,6 +39,50 @@ from app.services.realtime_notifications import (
 logger = logging.getLogger(__name__)
 
 _pii_redactor = PIIAnonymizer(entities=["CREDIT_CARD", "IBAN_CODE", "US_SSN"])
+
+# Base instruction used when an agent greets the visitor on conversation start. The agent's
+# optional `greeting_prompt` is appended to extend (not replace) it. The reply language is
+# stated explicitly below (there is no visitor message yet to infer it from).
+DEFAULT_GREETING_PROMPT = (
+    "You are starting a new conversation with a user who has just opened the chat. "
+    "Greet them warmly and briefly, in one or two short sentences, and invite them to ask "
+    "their question or tell you what they need. Do not make up details about the user; "
+    "do not ask for information unless the workflow requires it."
+)
+
+# Display names for the languages the platform seeds/supports, so the greeting instruction
+# can name the target language instead of passing a bare code the model may misread.
+_LANGUAGE_DISPLAY_NAMES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
+    "pt": "Portuguese", "it": "Italian", "zh": "Chinese", "ar": "Arabic", "sq": "Albanian",
+}
+
+
+async def _build_start_greeting_message(agent, language: Optional[str]) -> str:
+    """Greeting instruction sent (invisibly) to the workflow on conversation start.
+
+    Combines the default prompt with the agent's optional `greeting_prompt` (resolved to the
+    conversation language if a translation exists), then states the reply language explicitly
+    — at conversation open there is no visitor message for the model to infer language from.
+    """
+    extension = (getattr(agent, "greeting_prompt", None) or "").strip()
+    if extension and language:
+        key = f"agent.{agent.id}.greeting_prompt"
+        try:
+            translations_service = injector.get(TranslationsService)
+            resolved = await translations_service.resolve_many_for_lang({key: extension}, language)
+            extension = (resolved.get(key) or extension).strip()
+        except Exception as exc:  # translation is best-effort; fall back to the source text
+            logger.debug("greeting_prompt translation lookup failed: %s", exc)
+
+    parts = [DEFAULT_GREETING_PROMPT]
+    if extension:
+        parts.append(extension)
+    if language:
+        code = str(language).split("-")[0].lower()
+        name = _LANGUAGE_DISPLAY_NAMES.get(code, code)
+        parts.append(f"Write your greeting in {name}.")
+    return "\n\n".join(parts)
 
 
 # send message to the socket
@@ -123,6 +168,135 @@ def _build_agent_segment(
     )
 
 
+def _agent_text_from_answer(agent_answer: Any) -> str:
+    """Displayable text for a plain answer, which may be a string or a
+    {"message"/"response", ...} dict — avoids stringifying the whole dict into the chat."""
+    if isinstance(agent_answer, dict):
+        return agent_answer.get("message") or agent_answer.get("response") or str(agent_answer)
+    return str(agent_answer)
+
+
+def _build_agent_transcript_segment(
+    agent_response: dict,
+    metadata: Optional[dict],
+    now: datetime,
+    elapsed_seconds: float,
+) -> TranscriptSegmentInput:
+    """Turn an agent run result into the agent transcript segment to persist/broadcast.
+
+    Picks the segment shape from what the workflow returned (first match wins):
+      - awaiting_input -> form_request segment carrying the form schema
+      - live_result    -> live-voice reply (authoritative text carried in metadata; the
+                          DAG output can be a raw/stringified dict depending on which
+                          node finishes last, so we don't trust it here)
+      - nested audio   -> voice agent reply (text + audio payload)
+      - typed audio    -> audio response from a TTS workflow
+      - otherwise      -> plain text (extracting message/response from a dict answer)
+    """
+    if agent_response.get("status") == "awaiting_input":
+        response_output = agent_response.get("response", {})
+        form_schema = response_output.get("form_schema", {}) if isinstance(response_output, dict) else {}
+        return _build_agent_segment(now, elapsed_seconds, json.dumps(form_schema), type="form_request")
+
+    live_result = (metadata or {}).get("live_result")
+    if isinstance(live_result, dict) and live_result.get("message"):
+        return _build_agent_segment(now, elapsed_seconds, str(live_result["message"]))
+
+    agent_answer = agent_response.get("response", "No answer found")
+
+    if (
+        isinstance(agent_answer, dict)
+        and isinstance(agent_answer.get("audio"), dict)
+        and agent_answer["audio"].get("type") == "audio"
+    ):
+        audio = agent_answer["audio"]
+        return _build_agent_segment(
+            now,
+            elapsed_seconds,
+            str(agent_answer.get("message") or "[Audio response]"),
+            type="audio",
+            audio_data=base64.b64decode(audio.get("data", "")),
+            audio_format=audio.get("format", "wav"),
+        )
+
+    if isinstance(agent_answer, dict) and agent_answer.get("type") == "audio":
+        return _build_agent_segment(
+            now,
+            elapsed_seconds,
+            _extract_spoken_text(agent_response) or "[Audio response]",
+            type="audio",
+            audio_data=base64.b64decode(agent_answer.get("data", "")),
+            audio_format=agent_answer.get("format", "mp3"),
+        )
+
+    return _build_agent_segment(now, elapsed_seconds, _agent_text_from_answer(agent_answer))
+
+
+async def _localize_form_schema(agent_response: dict, agent_id: Any, language: Optional[str]) -> None:
+    """Translate a Human In The Loop form's user-facing strings into the conversation
+    language, in place. No-op unless the workflow paused with a form_schema.
+
+    Mirrors agent-field translation: keys are `agent.{agent_id}.node.{node_id}.*`, resolved
+    with the same fallback chain (language -> stored default -> source English). The chat
+    plugin renders whatever labels it receives, so resolving here keeps it untouched.
+    """
+    if agent_response.get("status") != "awaiting_input":
+        return
+    response_output = agent_response.get("response")
+    if not isinstance(response_output, dict):
+        return
+    form_schema = response_output.get("form_schema")
+    if not isinstance(form_schema, dict):
+        return
+    node_id = form_schema.get("node_id")
+    if not node_id:
+        return
+
+    prefix = f"agent.{agent_id}.node.{node_id}"
+    fields = [f for f in (form_schema.get("fields") or []) if isinstance(f, dict)]
+
+    # Collect every translatable string -> its source value (the resolver's fallback).
+    items: dict[str, Optional[str]] = {}
+    message_key = f"{prefix}.message"
+    if form_schema.get("message"):
+        items[message_key] = form_schema.get("message")
+    for field in fields:
+        fname = field.get("name")
+        if not fname:
+            continue
+        fkey = f"{prefix}.fields.{fname}"
+        for attr in ("label", "placeholder", "description"):
+            if field.get(attr):
+                items[f"{fkey}.{attr}"] = field.get(attr)
+        for opt in (field.get("options") or []):
+            if isinstance(opt, dict) and opt.get("value") and opt.get("label"):
+                items[f"{fkey}.options.{opt['value']}.label"] = opt.get("label")
+
+    if not items:
+        return
+
+    translations_service = injector.get(TranslationsService)
+    resolved = await translations_service.resolve_many_for_lang(items, language)
+
+    # Apply resolved values back (fall back to the original if a key wasn't resolved).
+    if message_key in items:
+        form_schema["message"] = resolved.get(message_key) or form_schema.get("message")
+    for field in fields:
+        fname = field.get("name")
+        if not fname:
+            continue
+        fkey = f"{prefix}.fields.{fname}"
+        for attr in ("label", "placeholder", "description"):
+            akey = f"{fkey}.{attr}"
+            if akey in items:
+                field[attr] = resolved.get(akey) or field.get(attr)
+        for opt in (field.get("options") or []):
+            if isinstance(opt, dict) and opt.get("value"):
+                okey = f"{fkey}.options.{opt['value']}.label"
+                if okey in items:
+                    opt["label"] = resolved.get(okey) or opt.get("label")
+
+
 async def process_conversation_update_with_agent(
     conversation_id: UUID,
     model: InProgConvTranscrUpdate,
@@ -164,6 +338,14 @@ async def process_conversation_update_with_agent(
         if message.text:
             message.text = _pii_redactor.redact(message.text)
 
+    # A start trigger is an invisible message the chat plugin sends right after the
+    # conversation opens (when the agent's greet_on_start is enabled). It runs the workflow
+    # with a greeting instruction so the agent greets the visitor — and if a Human In The
+    # Loop node is wired right after Chat Input, it pauses and shows its form instead. The
+    # trigger itself is never shown to the visitor nor kept in the transcript; only the
+    # resulting agent reply (greeting or form) is broadcast/persisted.
+    is_start_form_trigger = bool(model.metadata and model.metadata.get("start_form_trigger"))
+
     # Tag user message with audio data if present
     user_message = model.messages[0]
     if audio_bytes:
@@ -174,7 +356,8 @@ async def process_conversation_update_with_agent(
             user_message.text = "[Voice message]"
 
     # 1:1 chat: broadcast user message immediately with pre-generated ID
-    await send_message_to_socket(user_message, conversation_id, current_user_id, tenant_id)
+    if not is_start_form_trigger:
+        await send_message_to_socket(user_message, conversation_id, current_user_id, tenant_id)
 
     if conversation.status == ConversationStatus.IN_PROGRESS.value:
         agent = await agent_config_service.get_by_user_id(current_user_id, with_workflow=True)
@@ -192,57 +375,44 @@ async def process_conversation_update_with_agent(
             model.metadata["audio_data"] = base64.b64encode(audio_bytes).decode("utf-8")
             model.metadata["audio_format"] = audio_format or "webm"
 
+        # On a start trigger, feed the workflow the greeting instruction (default + the
+        # agent's optional extension, in the conversation language) so the agent greets;
+        # don't persist it to chat memory.
+        if is_start_form_trigger:
+            session_message = await _build_start_greeting_message(
+                agent, (model.metadata or {}).get("language")
+            )
+        else:
+            session_message = model.messages[-1].text
+
         agent_response = await run_query_agent_logic(
             agent_service,
             str(agent.id),
-            session_message=model.messages[-1].text,
+            session_message=session_message,
             metadata=model.metadata,
+            persist=not is_start_form_trigger,
+        )
+
+        # Translate a Human In The Loop form to the conversation language (no-op for any
+        # other response) so its labels match the agent's other translated content.
+        await _localize_form_schema(
+            agent_response, agent.id, (model.metadata or {}).get("language")
         )
 
         # Set formatted agent message in transcript
         now = datetime.now(timezone.utc)
         elapsed_seconds = (now - conversation.created_at).total_seconds()
 
-        if agent_response.get("status") == "awaiting_input":
-            # Workflow requesting user input — send form schema as form_request
-            response_output = agent_response.get("response", {})
-            form_schema = response_output.get("form_schema", {}) if isinstance(response_output, dict) else {}
-            transcript_object = _build_agent_segment(
-                now, elapsed_seconds, json.dumps(form_schema), type="form_request"
-            )
+        transcript_object = _build_agent_transcript_segment(
+            agent_response, model.metadata, now, elapsed_seconds
+        )
+
+        # For a start-form trigger, drop the invisible trigger message so only the form
+        # (agent reply) is persisted; otherwise keep both the user message and the reply.
+        if is_start_form_trigger:
+            model.messages = [transcript_object]
         else:
-            agent_answer = agent_response.get("response", "No answer found")
-
-            if (
-                isinstance(agent_answer, dict)
-                and isinstance(agent_answer.get("audio"), dict)
-                and agent_answer["audio"].get("type") == "audio"
-            ):
-                # Voice agent response: text reply + nested audio payload
-                audio = agent_answer["audio"]
-                transcript_object = _build_agent_segment(
-                    now,
-                    elapsed_seconds,
-                    str(agent_answer.get("message") or "[Audio response]"),
-                    type="audio",
-                    audio_data=base64.b64decode(audio.get("data", "")),
-                    audio_format=audio.get("format", "wav"),
-                )
-            elif isinstance(agent_answer, dict) and agent_answer.get("type") == "audio":
-                # Audio response from TTS workflow
-                transcript_object = _build_agent_segment(
-                    now,
-                    elapsed_seconds,
-                    _extract_spoken_text(agent_response) or "[Audio response]",
-                    type="audio",
-                    audio_data=base64.b64decode(agent_answer.get("data", "")),
-                    audio_format=agent_answer.get("format", "mp3"),
-                )
-            else:
-                # Normal text response
-                transcript_object = _build_agent_segment(now, elapsed_seconds, str(agent_answer))
-
-        model.messages.append(transcript_object)
+            model.messages.append(transcript_object)
 
         # 1:1 chat: broadcast agent message immediately with pre-generated ID
         await send_message_to_socket(transcript_object, conversation_id, current_user_id, tenant_id)

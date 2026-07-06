@@ -8,6 +8,8 @@ import { useViewportManager } from '../hooks/useViewportManager';
 import { useFileAttachments } from '../hooks/useFileAttachments';
 import { ChatMessage, GenAgentChatProps, ScheduleItem } from '../types';
 import { VoiceInput } from './VoiceInput';
+import { LiveCallControl } from './LiveCallControl';
+import { useLiveVoice as useLiveVoiceSession } from '../hooks/useLiveVoice';
 import { AudioService } from '../services/audioService';
 import { Paperclip, MoreVertical, RefreshCw, Globe, X, ArrowUp, Maximize2, Minimize2, AlertCircle } from 'lucide-react';
 import { ChatBubble } from './ChatBubble';
@@ -40,6 +42,7 @@ import {
   inputContainerStyle,
   inputWrapperStyle,
   getTextAreaStyle,
+  getLiveVoiceHintStyle,
   attachButtonStyle,
   getSendButtonStyle,
   sendButtonDisabledStyle,
@@ -58,6 +61,12 @@ import {
 } from '../styles/genAgentChatStyles';
 
 const SHOW_CHAT_LANGUAGE_SELECTOR = true;
+
+/** One completed (or in-progress) live-voice exchange: what the user said + the reply. */
+type LiveTurn = { user: string; agent: string; createTime: number };
+
+/** Current time in epoch seconds (the timestamp format ChatMessage expects). */
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 export const GenAgentChat: React.FC<GenAgentChatProps> = ({
   baseUrl,
@@ -160,6 +169,8 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     uploadFile,
     resetConversation,
     startConversation,
+    triggerStartForm,
+    shouldTriggerStartForm,
     conversationId,
     guestToken,
     possibleQueries,
@@ -167,12 +178,16 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     isAgentTyping,
     addFeedback,
     availableLanguages: agentAvailableLanguages,
+    agentId,
+    agentLiveVoiceEnabled,
+    agentLiveVoiceReady,
     welcomeTitle,
     welcomeImageUrl,
     welcomeMessage,
     inputDisclaimerHtml,
     thinkingPhrases,
     thinkingDelayMs,
+    formNodeLocales,
   } = useChat({
     baseUrl,
     websocketUrl,
@@ -253,6 +268,44 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
 
   const hasUserMessages = messages.some(message => message.speaker === 'customer');
 
+  // When a Human In The Loop node with "show_on_start" is wired directly after Start, run
+  // the workflow once as the conversation opens so its form appears immediately, before
+  // any visitor message. Fires only on a fresh conversation: no visitor messages yet and
+  // no form already present (a welcome message may exist; a persisted form must not
+  // re-trigger on reload).
+  const hasFormRequest = messages.some((m) => m.type === 'form_request');
+  const startFormTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (
+      shouldTriggerStartForm &&
+      conversationId &&
+      !isFinalized &&
+      !hasUserMessages &&
+      !hasFormRequest &&
+      !startFormTriggeredRef.current
+    ) {
+      startFormTriggeredRef.current = true;
+      triggerStartForm(reCaptchaTokenRef.current);
+    }
+  }, [shouldTriggerStartForm, conversationId, isFinalized, hasUserMessages, hasFormRequest, triggerStartForm]);
+
+  // Allow a fresh trigger after a reset (new conversation id / cleared messages).
+  useEffect(() => {
+    if (!conversationId) {
+      startFormTriggeredRef.current = false;
+    }
+  }, [conversationId]);
+
+  // Form-submission state is keyed by message index, which is only meaningful within a
+  // single conversation. Clear it whenever the conversation changes so a form submitted in
+  // a previous conversation doesn't mark a new conversation's form (at the same index) as
+  // already answered — which would wrongly hide it on Start (Reset cleared it, plain Start
+  // did not). The reload case stays correct: it relies on isFormAnswered's transcript check.
+  useEffect(() => {
+    setSubmittedForms(new Set());
+    setSubmittingFormIndex(null);
+  }, [conversationId]);
+
   useEffect(() => {
     audioService.current = new AudioService({ baseUrl, websocketUrl, apiKey });
   }, [baseUrl, websocketUrl, apiKey]);
@@ -328,21 +381,90 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     await submitMessage();
   };
 
-  const getFormNodeId = (messageIndex: number): string | undefined => {
+  type FormSchemaField = {
+    name?: string;
+    label?: string;
+    options?: Array<{ value?: string; label?: string }>;
+  };
+
+  // Overlay a form schema with the selected language's strings from the locale bundle
+  // (keyed by node id), so a displayed form re-localizes on language switch. Falls back
+  // to the schema's own strings when a translation is missing.
+  const localizeForm = useCallback(
+    (schema: any): any => {
+      if (!schema || typeof schema !== 'object') return schema;
+      const code = resolvedLanguage.toLowerCase().split('-')[0];
+      const slice = formNodeLocales?.[code]?.[schema.node_id];
+      if (!slice) return schema;
+      return {
+        ...schema,
+        message: slice.message ?? schema.message,
+        fields: Array.isArray(schema.fields)
+          ? schema.fields.map((f: any) => {
+              const t = f?.name ? slice.fields?.[f.name] : undefined;
+              if (!t) return f;
+              return {
+                ...f,
+                label: t.label ?? f.label,
+                placeholder: t.placeholder ?? f.placeholder,
+                description: t.description ?? f.description,
+                options: Array.isArray(f.options)
+                  ? f.options.map((o: any) => ({
+                      ...o,
+                      label: t.options?.[String(o?.value)] ?? o?.label,
+                    }))
+                  : f.options,
+              };
+            })
+          : schema.fields,
+      };
+    },
+    [resolvedLanguage, formNodeLocales],
+  );
+
+  const getFormSchema = (
+    messageIndex: number,
+  ): { node_id?: string; message?: string; fields?: FormSchemaField[] } | null => {
     const msg = messages[messageIndex];
     if (msg?.type === 'form_request' && msg.text) {
-      try { return JSON.parse(msg.text).node_id; } catch { /* skip */ }
+      try { return localizeForm(JSON.parse(msg.text)); } catch { /* skip */ }
     }
-    return undefined;
+    return null;
+  };
+
+  const getFormNodeId = (messageIndex: number): string | undefined =>
+    getFormSchema(messageIndex)?.node_id;
+
+  // Build the human-readable customer message from the submitted form. We show each field's
+  // label, and for option-based fields (e.g. select) the chosen option's label instead of
+  // its raw value — both already in the conversation language, since the form schema is
+  // translated. The payload (`human_in_the_loop_from_form`) keeps the raw keys/values.
+  const buildFormSummary = (
+    formData: Record<string, unknown>,
+    messageIndex: number,
+  ): string => {
+    const fieldByName: Record<string, FormSchemaField> = {};
+    for (const f of getFormSchema(messageIndex)?.fields ?? []) {
+      if (f && typeof f.name === 'string') fieldByName[f.name] = f;
+    }
+    return Object.entries(formData)
+      .map(([key, value]) => {
+        const field = fieldByName[key];
+        const label = field?.label || key;
+        const option = field?.options?.find(
+          (o) => o && String(o.value) === String(value),
+        );
+        const display = option?.label || value;
+        return `${label}: ${display}`;
+      })
+      .join('\n');
   };
 
   const handleFormSubmit = async (formData: Record<string, unknown>, messageIndex: number) => {
     if (submittingFormIndex !== null || isAgentTyping) return;
     setSubmittingFormIndex(messageIndex);
     try {
-      const summaryText = Object.entries(formData)
-        .map(([key, value]) => `${key}: ${value}`)
-        .join(', ');
+      const summaryText = buildFormSummary(formData, messageIndex);
       const nodeId = getFormNodeId(messageIndex);
       await sendMessage(summaryText, [], {
         human_in_the_loop_from_form: formData,
@@ -394,11 +516,106 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     }
   };
 
+  // Neutral, user-facing notice shown when a live call can't start / fails. The
+  // message is already neutral (the backend never sends internal config detail), so
+  // it's safe for public widgets — it just avoids a confusing silent close.
+  const [liveVoiceNotice, setLiveVoiceNotice] = useState<string | null>(null);
+
   const handleVoiceError = (error: Error) => {
+    setLiveVoiceNotice(error.message || 'Voice is currently unavailable');
     if (onError) {
       onError(error);
     }
   };
+
+  // Voice-only mode is driven purely by the agent: it's on when the agent's
+  // workflow contains a Voice Agent node (auto-detected by the backend and
+  // surfaced through `agentLiveVoiceEnabled`). No integrator prop is involved.
+  const liveVoiceEnabled = agentLiveVoiceEnabled;
+  // Whether live voice can actually run (a Gemini provider with a key is configured).
+  // When false we keep voice-only mode but disable the call control with a neutral
+  // message — the specific reason stays server-side, never shown to public users.
+  const liveVoiceReady = agentLiveVoiceReady;
+
+  // Live (continuous) voice conversation against the agent's Voice Agent node.
+  // `liveCaption` is the in-progress turn (streams as you speak); `liveTurns` are
+  // completed turns kept locally so they stay on screen across turns. `createTime`
+  // is captured once per turn so the bubble timestamp doesn't jitter on re-render.
+  const [liveCaption, setLiveCaption] = useState<LiveTurn>({ user: '', agent: '', createTime: 0 });
+  const [liveTurns, setLiveTurns] = useState<LiveTurn[]>([]);
+  const liveVoice = useLiveVoiceSession({
+    baseUrl,
+    apiKey,
+    guestToken,
+    tenant,
+    agentId,
+    conversationId,
+    language: resolvedLanguage,
+    onError: handleVoiceError,
+    onInputTranscript: (text) =>
+      setLiveCaption((c) => ({ ...c, user: c.user + text, createTime: c.createTime || nowSec() })),
+    onOutputTranscript: (text) =>
+      setLiveCaption((c) => ({ ...c, agent: c.agent + text, createTime: c.createTime || nowSec() })),
+    onTurnComplete: (turn) => {
+      // Commit the finished turn so it stays visible; clear the in-progress caption.
+      setLiveTurns((prev) => [...prev, { user: turn.transcript, agent: turn.response, createTime: nowSec() }]);
+      setLiveCaption({ user: '', agent: '', createTime: 0 });
+    },
+  });
+
+  // Full conversation reset: new thread + cleared input/attachments/forms and any
+  // live-voice transcript. Shared by the reset-confirm dialog and the end-call button.
+  const performReset = useCallback(async () => {
+    setInputValue('');
+    clearAttachments();
+    await resetConversation(reCaptchaTokenRef.current);
+    setSelectedFaqQuery(null);
+    setSubmittedForms(new Set());
+    setSubmittingFormIndex(null);
+    setLiveTurns([]);
+  }, [clearAttachments, resetConversation]);
+
+  // Starting a fresh call clears the previous call's transcript bubbles + caption.
+  const startLiveCall = useCallback(() => {
+    setLiveVoiceNotice(null);
+    setLiveCaption({ user: '', agent: '', createTime: 0 });
+    setLiveTurns([]);
+    liveVoice.start();
+  }, [liveVoice]);
+  // Ending a call stops the audio stream and resets the conversation — same as the
+  // "reset conversation" action — so the next call starts from a clean thread.
+  const endLiveCall = useCallback(() => {
+    liveVoice.stop();
+    setLiveCaption({ user: '', agent: '', createTime: 0 });
+    void performReset();
+  }, [liveVoice, performReset]);
+
+  // Keep the live transcript in view as it grows (the scroll manager only reacts
+  // to committed chat messages, not these local live bubbles).
+  useEffect(() => {
+    if (!liveVoice.isActive) return;
+    const el = chatContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [liveCaption, liveTurns, liveVoice.isActive, chatContainerRef]);
+
+  // Render a single live-voice bubble (committed turn or streaming caption) as an
+  // ordinary chat message, so it looks identical to text-mode bubbles.
+  const renderLiveBubble = (
+    speaker: 'customer' | 'agent',
+    text: string,
+    createTime: number,
+    key?: string,
+  ) => (
+    <ChatMessageComponent
+      key={key}
+      message={{ create_time: createTime, start_time: 0, end_time: 0.01, speaker, text }}
+      theme={theme}
+      enableTypewriter={false}
+      translations={translations}
+      language={resolvedLanguage}
+      agentName={agentName}
+    />
+  );
 
   const playResponseAudio = async (text: string) => {
     if (!audioService.current || isPlayingAudio) return;
@@ -483,15 +700,11 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     setShowResetConfirm(true);
   };
 
-  const handleConfirmReset = async () => {
-    setInputValue('');
-    clearAttachments();
-
-    await resetConversation(reCaptchaTokenRef.current);
-    setSelectedFaqQuery(null);
-    setSubmittedForms(new Set());
-    setSubmittingFormIndex(null);
+  const handleConfirmReset = () => {
     setShowResetConfirm(false);
+    // endLiveCall stops any active call and runs the full reset; harmless if no
+    // call is active, so both entry points share one code path.
+    endLiveCall();
   };
 
   const handleCancelReset = () => {
@@ -577,21 +790,34 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
     textColor,
   });
 
-  const hasPendingForm = messages.some((msg, idx) => {
-    if (msg.type !== 'form_request' || msg.speaker !== 'agent') return false;
-    return !submittedForms.has(idx);
-  });
+  // A form_request is "answered" once the visitor has responded to it. Besides the
+  // optimistic in-session flag (`submittedForms`), we also treat it as answered when a
+  // later customer message exists — that survives a page reload (where `submittedForms`
+  // is gone), so a completed form never reappears after refresh.
+  const isFormAnswered = (index: number): boolean => {
+    if (submittedForms.has(index)) return true;
+    for (let j = index + 1; j < messages.length; j++) {
+      if (messages[j].speaker === 'customer') return true;
+    }
+    return false;
+  };
+
+  const hasPendingForm = messages.some(
+    (msg, idx) =>
+      msg.type === 'form_request' && msg.speaker === 'agent' && !isFormAnswered(idx),
+  );
 
   const pendingForm = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
-      if (msg.type === 'form_request' && msg.speaker === 'agent' && !submittedForms.has(i)) {
-        try { return { schema: JSON.parse(msg.text), index: i }; }
+      if (msg.type === 'form_request' && msg.speaker === 'agent' && !isFormAnswered(i)) {
+        try { return { schema: localizeForm(JSON.parse(msg.text)), index: i }; }
         catch { /* skip */ }
       }
     }
     return null;
-  }, [messages, submittedForms]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, submittedForms, localizeForm]);
 
   const isSendDisabled = (inputValue.trim() === '' && attachments.length === 0) || isAgentTyping || hasPendingForm;
 
@@ -854,15 +1080,29 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
           {(() => {
             const firstAgentIndex = messages.findIndex(m => m.speaker === 'agent');
 
-            const applyMessageFilter = (message: any) => {
-              return message.type !== 'file';
+            // Live-voice turns are rendered locally (below) the moment they finish.
+            // Each is also persisted and broadcast back into `messages`; suppress that
+            // copy so a turn isn't shown twice (and never blinks as the two swap).
+            const liveTurnKeys = new Set<string>();
+            for (const turn of liveTurns) {
+              if (turn.user.trim()) liveTurnKeys.add(`customer:${turn.user.trim()}`);
+              if (turn.agent.trim()) liveTurnKeys.add(`agent:${turn.agent.trim()}`);
+            }
+
+            const applyMessageFilter = (message: ChatMessage) => {
+              if (message.type === 'file') return false;
+              if (liveTurnKeys.has(`${message.speaker}:${(message.text || '').trim()}`)) return false;
+              return true;
             }
 
             return messages.filter(applyMessageFilter).map((message, index) => {
               if (message.type === 'form_request' && message.speaker === 'agent') {
                 try {
-                  const formSchema = JSON.parse(message.text);
-                  const isPending = !submittedForms.has(index);
+                  const formSchema = localizeForm(JSON.parse(message.text));
+                  // Use the real message position (filtering can shift the map index) so the
+                  // answered check matches the overlay/footer path and survives reload.
+                  const originalIndex = messages.indexOf(message);
+                  const isPending = !isFormAnswered(originalIndex);
                   return (
                     <div key={index} style={{ display: 'flex', flexDirection: 'column', maxWidth: '85%', marginBottom: '8px' }}>
                       <div style={{ fontSize: '14px', color: '#000000', fontWeight: 600, marginBottom: 4 }}>
@@ -871,9 +1111,9 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
                       {formDisplay === 'inline' && isPending ? (
                         <DynamicFormMessage
                           schema={formSchema}
-                          onSubmit={(data) => handleFormSubmit(data, index)}
-                          onCancel={() => handleFormCancel(index)}
-                          isSubmitting={submittingFormIndex === index}
+                          onSubmit={(data) => handleFormSubmit(data, originalIndex)}
+                          onCancel={() => handleFormCancel(originalIndex)}
+                          isSubmitting={submittingFormIndex === originalIndex}
                           isSubmitted={false}
                           primaryColor={primaryColor}
                           fontFamily={fontFamily}
@@ -889,11 +1129,6 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
                           fontFamily,
                         }}>
                           {formSchema.message || 'Please fill the form below.'}
-                          {isPending && (
-                            <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
-                              Fill the form below to continue.
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
@@ -905,7 +1140,11 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
 
               const isNextSameSpeaker = index < messages.length - 1 && messages[index + 1].speaker === message.speaker;
               const isPrevSameSpeaker = index > 0 && messages[index - 1].speaker === message.speaker;
-              const isFirstAgentMessage = index === firstAgentIndex && message.speaker === 'agent' && !hasUserMessages;
+              // When the agent greets on start, that greeting is a normal reply — not the
+              // "welcome" message — so don't give it the first-message welcome treatment
+              // (which would split its text into a big title + body).
+              const isFirstAgentMessage =
+                index === firstAgentIndex && message.speaker === 'agent' && !hasUserMessages && !shouldTriggerStartForm;
               const displayMessage =
                 isFirstAgentMessage && welcomeMessage
                   ? { ...message, text: welcomeMessage }
@@ -964,6 +1203,22 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
               </div>
             </div>
           )}
+          {/* Completed live-voice turns, rendered as ordinary chat bubbles and kept
+              in local state so they stay visible across turns. The persisted copy of
+              each turn is filtered out of `messages` above, so these are the single
+              source of truth on screen — they never get hidden, so nothing blinks. */}
+          {liveTurns.map((turn, i) => (
+            <React.Fragment key={`live-turn-${i}`}>
+              {turn.user.trim() !== '' && renderLiveBubble('customer', turn.user, turn.createTime)}
+              {turn.agent.trim() !== '' && renderLiveBubble('agent', turn.agent, turn.createTime)}
+            </React.Fragment>
+          ))}
+          {/* In-progress turn: streams the partial transcript live (ChatMessage now
+              tracks its text prop, so these update in place as chunks arrive). */}
+          {liveVoice.isActive && liveCaption.user.trim() !== '' &&
+            renderLiveBubble('customer', liveCaption.user, liveCaption.createTime, '__live_caption_user__')}
+          {liveVoice.isActive && liveCaption.agent.trim() !== '' &&
+            renderLiveBubble('agent', liveCaption.agent, liveCaption.createTime, '__live_caption_agent__')}
           <div ref={messagesEndRef} />
         </div>
         {showWelcomeBeforeStart && (() => {
@@ -1014,6 +1269,28 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
           </div>
         )}
 
+        {liveVoiceNotice && (
+          <div
+            style={{
+              margin: '0 16px 8px',
+              padding: '10px 14px',
+              backgroundColor: '#FFF3E0',
+              color: '#E65100',
+              borderRadius: '12px',
+              fontSize,
+              fontFamily,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexShrink: 0,
+            }}
+            role="alert"
+          >
+            <AlertCircle size={18} style={{ flexShrink: 0 }} />
+            <span>{liveVoiceNotice}</span>
+          </div>
+        )}
+
         {useFile && attachments.length > 0 && (
           <div style={{ padding: '0 16px', marginBottom: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             {attachments.map((att, index) => (
@@ -1038,27 +1315,32 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
               {t('buttons.startConversation')}
             </button>
           </div>
-        ) : pendingForm && formDisplay === 'footer' ? (
-          <div style={{
-            ...inputContainerStyle,
-            flexDirection: 'column',
-            borderTop: '1px solid #e5e7eb',
-          }}>
-            <DynamicFormMessage
-              schema={pendingForm.schema}
-              onSubmit={(data) => handleFormSubmit(data, pendingForm.index)}
-              onCancel={() => handleFormCancel(pendingForm.index)}
-              isSubmitting={submittingFormIndex === pendingForm.index}
-              isSubmitted={false}
-              primaryColor={primaryColor}
-              fontFamily={fontFamily}
-              variant="footer"
-            />
-            {agentDisclaimerContent && (
-              <div className="ga-input-disclaimer" style={disclaimerStyle}>
-                {agentDisclaimerContent}
+        ) : liveVoiceEnabled ? (
+          // Live voice mode is voice-only: no text box, attach, or send button —
+          // the only way to talk to the agent is to start a live call.
+          <div style={inputContainerStyle}>
+            <div style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}>
+              <div style={inputWrapperStyle}>
+                <span style={getLiveVoiceHintStyle(textAreaFontSize, fontFamily)}>
+                  {liveVoiceReady
+                    ? t('liveVoice.tapToStart', 'Tap to start a voice conversation')
+                    : t('liveVoice.unavailable', 'Voice is currently unavailable')}
+                </span>
+                <LiveCallControl
+                  status={liveVoice.status}
+                  isActive={liveVoice.isActive}
+                  onStart={startLiveCall}
+                  onStop={endLiveCall}
+                  theme={theme}
+                  disabled={!agentId || !liveVoiceReady}
+                />
               </div>
-            )}
+              {agentDisclaimerContent && (
+                <div className="ga-input-disclaimer" style={disclaimerStyle}>
+                  {agentDisclaimerContent}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <form onSubmit={handleSubmit} style={inputContainerStyle}>
@@ -1138,6 +1420,34 @@ export const GenAgentChat: React.FC<GenAgentChatProps> = ({
             )}
             </div>
           </form>
+        )}
+
+        {/* Full-screen form: when a Human In The Loop form is pending, it takes over the
+            whole chat panel (the node's message shown as a heading on top) instead of a
+            cramped footer. Inline mode keeps rendering the form within the message list. */}
+        {pendingForm && formDisplay !== 'inline' && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 30,
+              display: 'flex',
+              flexDirection: 'column',
+              backgroundColor: backgroundColor || '#ffffff',
+            }}
+          >
+            <DynamicFormMessage
+              schema={pendingForm.schema}
+              onSubmit={(data) => handleFormSubmit(data, pendingForm.index)}
+              onCancel={() => handleFormCancel(pendingForm.index)}
+              isSubmitting={submittingFormIndex === pendingForm.index}
+              isSubmitted={false}
+              primaryColor={primaryColor}
+              fontFamily={fontFamily}
+              variant="fullscreen"
+              title={agentName || undefined}
+            />
+          </div>
         )}
       </div>
 

@@ -58,7 +58,12 @@ from app.schemas.conversation_transcript import (
     InProgressConversationTranscriptFinalize,
     TranscriptSegmentFeedback,
 )
-from app.schemas.filter import ConversationFilter
+from app.schemas.common import PaginatedResponse
+from app.schemas.filter import ConversationFilter, MessageIssueFilter
+from app.schemas.message_issue import (
+    IssueStatusUpdate,
+    ReportedIssueRead,
+)
 from app.schemas.socket_principal import SocketPrincipal
 from app.services.agent_config import AgentConfigService
 from app.services.agent_response_log import AgentResponseLogService
@@ -88,6 +93,97 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _voice_provider_has_key(provider_id) -> bool:
+    """Best-effort check that the live-voice node's provider is a Gemini provider
+    with an API key. Returns False (never raises) on any problem — the widget only
+    needs a yes/no, and a wrong 'not ready' is safer than failing the bootstrap."""
+    if not provider_id:
+        return False
+    try:
+        from uuid import UUID
+
+        from app.modules.workflow.audio.provider import load_connection_data
+
+        provider_type, connection_data = await load_connection_data(UUID(str(provider_id)))
+        return provider_type == "gemini" and bool(connection_data.get("api_key"))
+    except Exception as exc:
+        logger.warning("Live-voice readiness check failed for provider %s: %s", provider_id, exc)
+        return False
+
+
+async def _localize_node_forms(
+    agent_prefix: str,
+    nodes: list,
+    lang_codes: list[str],
+    translations_service: TranslationsService,
+) -> dict[str, dict]:
+    """Resolve HITL node form strings per language into { lang: { node_id: {...} } }."""
+    items: dict[str, str | None] = {}
+    specs: list[dict] = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "humanInTheLoopNode":
+            continue
+        node_id = node.get("id")
+        if not node_id:
+            continue
+        data = node.get("data") or {}
+        prefix = f"{agent_prefix}.node.{node_id}"
+        spec: dict = {"node_id": node_id, "has_message": bool(data.get("message")), "fields": []}
+        if data.get("message"):
+            items[f"{prefix}.message"] = data.get("message")
+        for field in data.get("form_fields") or []:
+            if not isinstance(field, dict) or not field.get("name"):
+                continue
+            fkey = f"{prefix}.fields.{field['name']}"
+            attrs = [a for a in ("label", "placeholder", "description") if field.get(a)]
+            for attr in attrs:
+                items[f"{fkey}.{attr}"] = field.get(attr)
+            options = []
+            for opt in field.get("options") or []:
+                if isinstance(opt, dict) and opt.get("value") and opt.get("label"):
+                    value = str(opt["value"])
+                    items[f"{fkey}.options.{value}.label"] = opt.get("label")
+                    options.append(value)
+            spec["fields"].append({"name": field["name"], "attrs": attrs, "options": options})
+        specs.append(spec)
+
+    if not specs:
+        return {}
+
+    out: dict[str, dict] = {}
+    for code in lang_codes:
+        resolved = await translations_service.resolve_many_for_lang(items, code)
+        node_locales: dict[str, dict] = {}
+        for spec in specs:
+            prefix = f"{agent_prefix}.node.{spec['node_id']}"
+            node_slice: dict = {}
+            if spec["has_message"] and resolved.get(f"{prefix}.message"):
+                node_slice["message"] = resolved.get(f"{prefix}.message")
+            fields_slice: dict = {}
+            for field in spec["fields"]:
+                fkey = f"{prefix}.fields.{field['name']}"
+                field_slice = {
+                    attr: resolved.get(f"{fkey}.{attr}")
+                    for attr in field["attrs"]
+                    if resolved.get(f"{fkey}.{attr}")
+                }
+                option_slice = {
+                    value: resolved.get(f"{fkey}.options.{value}.label")
+                    for value in field["options"]
+                    if resolved.get(f"{fkey}.options.{value}.label")
+                }
+                if option_slice:
+                    field_slice["options"] = option_slice
+                if field_slice:
+                    fields_slice[field["name"]] = field_slice
+            if fields_slice:
+                node_slice["fields"] = fields_slice
+            if node_slice:
+                node_locales[spec["node_id"]] = node_slice
+        out[code] = node_locales
+    return out
+
+
 @router.get(
     "/in-progress/agent-info",
     dependencies=[
@@ -110,9 +206,22 @@ async def get_agent_info(
 
     available_languages = await translations_service.get_languages_for_prefix(f"agent.{agent.id}.")
 
+    # True when the agent's workflow contains a voiceAgentNode (so the widget can
+    # switch to voice-only mode without an integrator prop). `live_voice_ready` then
+    # tells the widget whether a usable Gemini key is configured — only a boolean is
+    # exposed, never the reason, since the widget can be shown to public end users.
+    live_voice_enabled = bool(getattr(request.state, "agent_live_voice_enabled", False))
+    live_voice_ready = False
+    if live_voice_enabled:
+        live_voice_ready = await _voice_provider_has_key(
+            getattr(request.state, "agent_voice_provider_id", None)
+        )
+
     response = {
         "agent_id": str(agent.id),
         "agent_available_languages": available_languages,
+        "live_voice_enabled": live_voice_enabled,
+        "live_voice_ready": live_voice_ready,
     }
 
     agent_security_settings = agent.security_settings if hasattr(agent, "security_settings") else None
@@ -163,6 +272,14 @@ async def get_agent_chat_locales(
     default_lang = (settings.DEFAULT_LANGUAGE or "en").split("-")[0].lower()
     lang_codes = sorted(set(available_languages) | {default_lang})
 
+    # Nodes come from request.state (get_agent_for_start swaps agent.workflow for testInput).
+    node_forms = await _localize_node_forms(
+        agent_prefix,
+        getattr(request.state, "agent_workflow_nodes", None) or [],
+        lang_codes,
+        translations_service,
+    )
+
     locales: dict[str, dict[str, object]] = {}
     for code in lang_codes:
         resolved = await translations_service.resolve_many_for_lang(translation_items, code)
@@ -181,6 +298,7 @@ async def get_agent_chat_locales(
             "input_disclaimer_html": input_disclaimer_html,
             "possible_queries": resolved_queries,
             "thinking_phrases": resolved_phrases,
+            "nodes": node_forms.get(code, {}),
         }
 
     response = {
@@ -196,6 +314,23 @@ async def get_agent_chat_locales(
     json_response = JSONResponse(content=response)
     apply_agent_cors_headers(request, json_response, agent_security_settings)
     return json_response
+
+
+@router.get(
+    "/issues",
+    response_model=PaginatedResponse[ReportedIssueRead],
+    dependencies=[Depends(auth), Depends(permissions(P.Conversation.READ))],
+)
+async def get_message_issues(
+    filter_obj: MessageIssueFilter = Depends(),
+    transcript_message_service: TranscriptMessageService = Injected(
+        TranscriptMessageService
+    ),
+):
+    """Paginated list of messages with an admin/supervisor comment (reported
+    issues), newest first, with conversation + agent/workflow context and the
+    tracked resolution status. Group-scoped; all filters applied server-side."""
+    return await transcript_message_service.get_message_issues(filter_obj)
 
 
 @router.get(
@@ -301,6 +436,17 @@ async def start(
     ]
     available_languages = await translations_service.get_languages_for_prefix(f"agent.{agent.id}.")
 
+    # When the agent greets on start, the dynamic greeting replaces the static welcome
+    # screen — suppress the welcome message/title/FAQs/image so they don't show alongside
+    # it (and so the greeting, the first agent message, isn't overridden by the welcome
+    # message on the client).
+    greet_on_start = bool(getattr(request.state, "agent_trigger_start_form", False))
+    if greet_on_start:
+        welcome_message = None
+        welcome_title = None
+        resolved_queries = []
+    has_welcome_image = agent_data.get("welcome_image") is not None and not greet_on_start
+
     response = {
         "message": "Conversation started",
         "conversation_id": str(conversation.id),
@@ -310,8 +456,9 @@ async def start(
         "agent_possible_queries": resolved_queries,
         "agent_thinking_phrases": resolved_phrases,
         "agent_thinking_phrase_delay": agent_data.get("thinking_phrase_delay"),
-        "agent_has_welcome_image": agent_data.get("welcome_image") is not None,
+        "agent_has_welcome_image": has_welcome_image,
         "agent_chat_input_metadata": agent_data.get("workflow"),
+        "agent_trigger_start_form": greet_on_start,
         "agent_input_disclaimer_html": input_disclaimer_html,
         "agent_available_languages": available_languages,
     }
@@ -805,6 +952,24 @@ async def get_conversation_count(
     return await conversations_service.count_conversations(conversation_filter)
 
 
+@router.patch(
+    "/issues/{message_feedback_id}/status",
+    dependencies=[Depends(auth), Depends(permissions(P.Conversation.READ))],
+)
+async def update_message_issue_status(
+    message_feedback_id: UUID,
+    payload: IssueStatusUpdate,
+    transcript_message_service: TranscriptMessageService = Injected(
+        TranscriptMessageService
+    ),
+):
+    """Set the resolution status of a reported issue (a message comment)."""
+    issue = await transcript_message_service.set_issue_status(
+        message_feedback_id, payload.status
+    )
+    return {"message_feedback_id": str(message_feedback_id), "status": issue.status}
+
+
 @router.delete(
     "/{conversation_id}/gdpr",
     dependencies=[
@@ -856,18 +1021,21 @@ async def add_message_feedback(
         message_id, transcript_feedback
     )
 
-    # Get the conversation and update thumbs up/down counts
-    conversation = await conversation_service.get_conversation_by_id(conversation_id, raise_not_found=True)
+    # Only adjust thumbs counters/analytics when an actual rating is supplied.
+    # A comment-only update (feedback is None) must not affect thumbs up/down.
+    if transcript_feedback.feedback is not None:
+        # Get the conversation and update thumbs up/down counts
+        conversation = await conversation_service.get_conversation_by_id(conversation_id, raise_not_found=True)
 
-    # Update conversation thumbs up/down counts based on feedback type
-    increment_feedback(conversation, transcript_feedback, previous_feedback)
+        # Update conversation thumbs up/down counts based on feedback type
+        increment_feedback(conversation, transcript_feedback, previous_feedback)
 
-    # Persist the updated conversation
-    await conversation_service.update_conversation(conversation)
+        # Persist the updated conversation
+        await conversation_service.update_conversation(conversation)
 
-    # Fire incremental analytics update for thumbs in background
-    is_thumbs_up = transcript_feedback.feedback in (Feedback.GOOD, Feedback.VERY_GOOD)
-    _ = asyncio.create_task(update_feedback_given(conversation_id, is_thumbs_up))
+        # Fire incremental analytics update for thumbs in background
+        is_thumbs_up = transcript_feedback.feedback in (Feedback.GOOD, Feedback.VERY_GOOD)
+        _ = asyncio.create_task(update_feedback_given(conversation_id, is_thumbs_up))
 
     return {"message": f"Successfully added message feedback, for message id:{message_id} "}
 

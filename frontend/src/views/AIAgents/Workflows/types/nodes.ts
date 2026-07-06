@@ -64,6 +64,9 @@ export interface TemplateNodeData extends BaseNodeData {
 // Chat Output node data
 export type ChatOutputNodeData = BaseNodeData;
 
+// Finalize Conversation ("End Conversation") node data — pass-through, optional display name only
+export type FinalizeConversationNodeData = BaseNodeData;
+
 // Slack Output node data
 export interface SlackOutputNodeData extends BaseNodeData {
   channel: string; // target Slack channel or user ID/email
@@ -122,6 +125,15 @@ export interface ZendeskTicketNodeData extends BaseNodeData {
   requester_email?: string;
   tags?: string[];
   custom_fields?: Array<{ id: string; value: string | number }>;
+  app_settings_id?: string;
+}
+
+export interface SalesforceCaseNodeData extends BaseNodeData {
+  subject: string;
+  description: string;
+  /** Assigned to the created Case as SalesForce Topics. */
+  labels?: string[];
+  custom_fields?: Array<{ key: string; value: string }>;
   app_settings_id?: string;
 }
 
@@ -192,6 +204,7 @@ export interface ExternalAgentNodeData extends BaseNodeData {
 // LLM Model node data
 export interface BaseLLMNodeData extends BaseNodeData {
   providerId: string;
+  fallbackChainId?: string;
   memory: boolean;
   piiMasking?: boolean;
   systemPrompt?: string;
@@ -237,6 +250,14 @@ export interface VoiceAgentNodeData extends BaseNodeData {
   piiMasking?: boolean;
   memoryTrimmingMode?: "message_count" | "rag_retrieval";
   maxMessages?: number;
+  // Live tuning (optional; unset = Gemini Live defaults)
+  temperature?: number;
+  maxOutputTokens?: number;
+  vadSilenceMs?: number;
+  vadStartSensitivity?: "START_SENSITIVITY_HIGH" | "START_SENSITIVITY_LOW";
+  vadEndSensitivity?: "END_SENSITIVITY_HIGH" | "END_SENSITIVITY_LOW";
+  proactiveAudio?: boolean;
+  contextCompression?: boolean;
 }
 export interface LLMModelNodeData extends BaseLLMNodeData {
   type: "Base" | "Chain-of-Thought";
@@ -247,6 +268,18 @@ export interface KnowledgeBaseNodeData extends BaseNodeData {
   query: string;
   limit?: number;
   force?: boolean;
+}
+
+// Create Workflow Schedule node data
+export interface CreateWorkflowScheduleNodeData extends BaseNodeData {
+  agentId: string;
+  scheduleName?: string;
+  cronSchedule: string;
+  isActive?: boolean;
+  threadIdMode?: "per_run" | "fixed";
+  fixedThreadId?: string;
+  message?: string;
+  inputData?: string;
 }
 
 // SQL Node Data
@@ -499,6 +532,7 @@ export type NodeData =
   | LLMModelNodeData
   | TemplateNodeData
   | ChatOutputNodeData
+  | FinalizeConversationNodeData
   | APIToolNodeData
   | AgentNodeData
   | KnowledgeBaseNodeData

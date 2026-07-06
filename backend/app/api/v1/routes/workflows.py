@@ -45,6 +45,7 @@ SUPPORTED_NODE_TYPES = [
     "gmailNode",
     "whatsappToolNode",
     "zendeskTicketNode",
+    "salesforceCaseNode",
     "pythonCodeNode",
     "sqlNode",
     "aggregatorNode",
@@ -64,7 +65,8 @@ SUPPORTED_NODE_TYPES = [
     "externalAgentNode",
     "ttsNode",
     "sttNode",
-    "voiceAgentNode"
+    "voiceAgentNode",
+    "createWorkflowScheduleNode"
 ]
 
 

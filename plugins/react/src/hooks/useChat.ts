@@ -6,6 +6,7 @@ import {
   Attachment,
   MessageFeedback,
   InProgressPollMessage,
+  FormNodeLocale,
 } from "../types";
 
 export interface UseChatProps {
@@ -84,12 +85,20 @@ export const useChat = ({
   const [inputDisclaimerHtml, setInputDisclaimerHtml] = useState<string | null>(null);
   const [thinkingPhrases, setThinkingPhrases] = useState<string[]>([]);
   const [thinkingDelayMs, setThinkingDelayMs] = useState<number>(1000);
+  // HITL form strings per locale ({ lang: { nodeId: slice } }) for live form re-localization.
+  const [formNodeLocales, setFormNodeLocales] = useState<
+    Record<string, Record<string, FormNodeLocale>>
+  >({});
+  const [agentId, setAgentId] = useState<string | null>(null);
+  const [agentLiveVoiceEnabled, setAgentLiveVoiceEnabled] = useState<boolean>(false);
+  const [agentLiveVoiceReady, setAgentLiveVoiceReady] = useState<boolean>(false);
   const [availableLanguages, setAvailableLanguages] = useState<string[] | null>(
     null,
   );
   const [chatInputMetadata, setChatInputMetadata] = useState<
     Record<string, unknown>
   >({});
+  const [shouldTriggerStartForm, setShouldTriggerStartForm] = useState<boolean>(false);
   const [isTakenOver, setIsTakenOver] = useState<boolean>(false);
   const [isFinalized, setIsFinalized] = useState<boolean>(false);
 
@@ -354,6 +363,11 @@ export const useChat = ({
         if (info && Array.isArray(info.agent_available_languages)) {
           setAvailableLanguages(info.agent_available_languages);
         }
+        if (info?.agent_id) {
+          setAgentId(info.agent_id);
+        }
+        setAgentLiveVoiceEnabled(info?.live_voice_enabled === true);
+        setAgentLiveVoiceReady(info?.live_voice_ready === true);
 
         if (cancelled) return;
         if (info && Array.isArray(info.agent_available_languages)) {
@@ -364,6 +378,10 @@ export const useChat = ({
         if (!cancelled && applied) {
           setThinkingPhrases(applied.thinkingPhrases);
           setThinkingDelayMs(applied.thinkingDelayMs);
+        }
+        const nodeLocales = service.getFormNodeLocales?.();
+        if (!cancelled && nodeLocales) {
+          setFormNodeLocales(nodeLocales);
         }
         const meta = service.getChatInputMetadata?.();
         if (
@@ -745,6 +763,9 @@ export const useChat = ({
         if (meta && typeof meta === "object" && Object.keys(meta).length > 0) {
           setChatInputMetadata(meta);
         }
+        setShouldTriggerStartForm(
+          chatServiceRef.current.shouldTriggerStartForm?.() ?? false,
+        );
         onConfigLoadedRef.current?.({
           chatInputMetadata:
             chatServiceRef.current.getChatInputMetadata?.() ?? {},
@@ -922,6 +943,24 @@ export const useChat = ({
     [isTakenOver, isTokenExpiredError, resetToInitialState],
   );
 
+  // Invisible trigger that runs the workflow as the conversation opens so a Human In The
+  // Loop form (show_on_start, wired after Start) appears without a first user message.
+  const triggerStartForm = useCallback(async (reCaptchaToken?: string | undefined) => {
+    if (!chatServiceRef.current) return;
+    try {
+      if (!isTakenOver) {
+        setIsAgentTyping(true);
+      }
+      await chatServiceRef.current.sendStartFormTrigger(reCaptchaToken);
+    } catch (error: any) {
+      setIsAgentTyping(false);
+      if (isTokenExpiredError(error)) {
+        resetToInitialState();
+      }
+      // Best-effort: if it fails the visitor can still type normally.
+    }
+  }, [isTakenOver, isTokenExpiredError, resetToInitialState]);
+
   const startConversation = useCallback(
     async (reCaptchaToken?: string | undefined) => {
       if (!chatServiceRef.current) {
@@ -973,6 +1012,9 @@ export const useChat = ({
         if (meta && typeof meta === "object" && Object.keys(meta).length > 0) {
           setChatInputMetadata(meta);
         }
+        setShouldTriggerStartForm(
+          chatServiceRef.current.shouldTriggerStartForm?.() ?? false,
+        );
         onConfigLoadedRef.current?.({
           chatInputMetadata:
             chatServiceRef.current.getChatInputMetadata?.() ?? {},
@@ -1047,6 +1089,8 @@ export const useChat = ({
     uploadFile,
     resetConversation,
     startConversation,
+    triggerStartForm,
+    shouldTriggerStartForm,
     connectionState,
     conversationId,
     guestToken,
@@ -1061,7 +1105,11 @@ export const useChat = ({
     inputDisclaimerHtml,
     thinkingPhrases,
     thinkingDelayMs,
+    formNodeLocales,
     availableLanguages,
     chatInputMetadata,
+    agentId,
+    agentLiveVoiceEnabled,
+    agentLiveVoiceReady,
   };
 };

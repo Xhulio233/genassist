@@ -269,6 +269,7 @@ def create_celery():
     ML_TASK_MODULES = [
         "app.tasks.ml_model_pipeline_tasks",
         "app.tasks.test_suite_tasks",
+        "app.tasks.workflow_schedule_tasks",
     ]
     include = [
         "app.tasks.base",
@@ -276,6 +277,7 @@ def create_celery():
         "app.tasks.conversations_tasks",
         "app.tasks.zendesk_tasks",
         "app.tasks.zendesk_article_sync_tasks",
+        "app.tasks.salesforce_article_sync_tasks",
         "app.tasks.audio_tasks",
         "app.tasks.sharepoint_tasks",
         "app.tasks.fine_tune_job_sync_tasks",
@@ -283,6 +285,7 @@ def create_celery():
         "app.tasks.kb_batch_tasks",
         "app.tasks.analytics_aggregation_tasks",
         "app.tasks.file_upload_session_tasks",
+        "app.tasks.email_tasks",
     ]
     if settings.CELERY_INCLUDE_ML_TASKS:
         include += ML_TASK_MODULES
@@ -335,6 +338,9 @@ def create_celery():
             "execute_pipeline_run": {"queue": "ml"},
             "execute_test_suite_run": {"queue": "ml"},
             "app.tasks.ml_model_pipeline_tasks.check_scheduled_pipeline_runs": {"queue": "ml"},
+            "execute_workflow_run": {"queue": "ml"},
+            "app.tasks.workflow_schedule_tasks.check_scheduled_workflow_runs": {"queue": "ml"},
+            "app.tasks.workflow_schedule_tasks.reconcile_stuck_workflow_runs": {"queue": "ml"},
         },
         worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
         worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
@@ -418,6 +424,18 @@ def create_celery():
             },
         }
 
+    if settings.CELERY_ENABLE_IMPORT_SALESFORCE_ARTICLES_TASK:
+        beat_schedule["import-salesforce-articles-to-kb"] = {
+            "task": "app.tasks.salesforce_article_sync_tasks.import_salesforce_articles_to_kb",
+            # Beat fires every 15 minutes; the task itself has cron-based scheduling
+            # logic, so the tick only needs to be frequent enough to *check* whether
+            # a KB is due. Aligned with the 15-min expires below.
+            "schedule": crontab(minute="*/15"),
+            "options": {
+                "expires": 900,  # Task expires after 15 minutes
+            },
+        }
+
     if settings.CELERY_ENABLE_IMPORT_SHAREPOINT_FILES_TASK:
         beat_schedule["import-sharepoint-files-to-kb"] = {
             "task": "app.tasks.sharepoint_tasks.import_sharepoint_files_to_kb",
@@ -448,6 +466,20 @@ def create_celery():
             "schedule": 60.0,  # Every minute (60 seconds)
         }
 
+    # Check for scheduled workflow runs every minute
+    if settings.CELERY_ENABLE_CHECK_SCHEDULED_WORKFLOW_RUNS_TASK:
+        beat_schedule["check-scheduled-workflow-runs"] = {
+            "task": "app.tasks.workflow_schedule_tasks.check_scheduled_workflow_runs",
+            "schedule": 60.0,  # Every minute (60 seconds)
+        }
+
+    # Reconcile workflow runs orphaned by a worker/pod crash every 5 minutes
+    if settings.CELERY_ENABLE_RECONCILE_STUCK_WORKFLOW_RUNS_TASK:
+        beat_schedule["reconcile-stuck-workflow-runs"] = {
+            "task": "app.tasks.workflow_schedule_tasks.reconcile_stuck_workflow_runs",
+            "schedule": 300.0,  # Every 5 minutes (300 seconds)
+        }
+
     # Sync active KB's jobs every 5 minutes
     if settings.CELERY_ENABLE_SUMMARIZE_FILES_FROM_AZURE_TASK:
         beat_schedule["summarize-files-from-azure"] = {
@@ -471,6 +503,12 @@ def create_celery():
             "schedule": crontab(minute="0", hour="3"),
             "options": {"expires": 7200},
         }
+
+    beat_schedule["process-support-ticket-sync-outbox"] = {
+        "task": "app.tasks.support_ticket_tasks.process_support_ticket_sync_outbox_task",
+        "schedule": crontab(minute="*/2"),
+        "options": {"expires": 300},
+    }
 
     celery_app.conf.beat_schedule = beat_schedule
 

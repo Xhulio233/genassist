@@ -46,10 +46,20 @@ class ProjectSettings(BaseSettings):
     CELERY_ENABLE_TRANSCRIBE_S3_FILES_TASK: bool = True
     CELERY_ENABLE_ZENDESK_ANALYSIS_TASK: bool = True
     CELERY_ENABLE_IMPORT_ZENDESK_ARTICLES_TASK: bool = True
+    CELERY_ENABLE_IMPORT_SALESFORCE_ARTICLES_TASK: bool = True
     CELERY_ENABLE_IMPORT_SHAREPOINT_FILES_TASK: bool = True
     CELERY_ENABLE_TRANSCRIBE_AUDIO_FILES_FROM_SMB_TASK: bool = True
     CELERY_ENABLE_SYNC_ACTIVE_FINE_TUNING_JOBS_TASK: bool = True
     CELERY_ENABLE_CHECK_SCHEDULED_PIPELINE_RUNS_TASK: bool = True
+    CELERY_ENABLE_CHECK_SCHEDULED_WORKFLOW_RUNS_TASK: bool = True
+    CELERY_ENABLE_RECONCILE_STUCK_WORKFLOW_RUNS_TASK: bool = True
+    # A scheduled run still PENDING after this many seconds is presumed orphaned
+    # (its worker never picked it up / crashed before starting) and marked FAILED.
+    WORKFLOW_SCHEDULE_PENDING_MAX_AGE_SECONDS: int = 900  # 15 minutes
+    # A scheduled run still RUNNING after this many seconds is presumed orphaned
+    # (worker died mid-run). Kept above the 2h execution timeout + buffer so a
+    # genuinely long run is never failed prematurely.
+    WORKFLOW_SCHEDULE_RUNNING_MAX_AGE_SECONDS: int = 7800  # 2h10m
     CELERY_ENABLE_SUMMARIZE_FILES_FROM_AZURE_TASK: bool = True
     CELERY_ENABLE_AGGREGATE_AGENT_ANALYTICS_TASK: bool = True
     CELERY_ENABLE_BACKFILL_CUSTOM_ATTRIBUTES_TASK: bool = True
@@ -194,6 +204,35 @@ class ProjectSettings(BaseSettings):
     ZENDESK_EMAIL: Optional[str] = "<enter-value-here>"
     ZENDESK_API_TOKEN: Optional[str] = "<enter-value-here>"
     ZENDESK_CUSTOM_FIELD_CONVERSATION_ID: Optional[int] = 0
+
+    SALESFORCE_INSTANCE_URL: Optional[str] = None
+    SALESFORCE_CLIENT_ID: Optional[str] = None
+    SALESFORCE_CLIENT_SECRET: Optional[str] = None
+
+    # Help Center → company Azure DevOps Boards (platform ops; not user App Settings)
+    AZURE_DEVOPS_ORGANIZATION_URL: Optional[str] = None
+    AZURE_DEVOPS_PROJECT: Optional[str] = None
+    AZURE_DEVOPS_PAT: Optional[str] = None
+    AZURE_DEVOPS_WORK_ITEM_TYPE: Optional[str] = "Bug"
+    AZURE_DEVOPS_FEATURE_WORK_ITEM_TYPE: Optional[str] = None
+    AZURE_DEVOPS_TASK_WORK_ITEM_TYPE: Optional[str] = None
+    AZURE_DEVOPS_DEFAULT_AREA_PATH: Optional[str] = None
+    AZURE_DEVOPS_WEBHOOK_SECRET: Optional[str] = None
+    HELP_CENTER_PUBLIC_BASE_URL: Optional[str] = None
+
+    # === SMTP / Email ===
+    # Global fallback SMTP account. Used when a tenant has no SMTP entry in its
+    # App Settings (mirrors the Zendesk env-var fallback pattern). Per-tenant
+    # config in AppSettings (type="SMTP") always takes precedence.
+    EMAIL_ENABLED: bool = True  # Master switch; when False, EmailService logs instead of sending.
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587  # 587 = STARTTLS, 465 = implicit TLS, 25 = plain
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: Optional[str] = None
+    SMTP_FROM_NAME: str = "GenAssist"
+    SMTP_USE_TLS: bool = True  # STARTTLS for port 587
+    SMTP_TIMEOUT: int = 15
 
     AWS_RECORDINGS_BUCKET: Optional[str] = "genassist-dev-temp-bucket"
     AWS_S3_TEST_BUCKET: Optional[str] = "genassist-dev-temp-bucket"

@@ -9,6 +9,7 @@ from app.db.models.audit_log import AuditLogModel
 from app.db.models.conversation import ConversationAnalysisModel, ConversationModel
 from app.db.models.customer import CustomerModel
 from app.db.models.datasource import DataSourceModel
+from app.db.models.fallback_chain import FallbackChainModel
 from app.db.models.job import JobModel
 from app.db.models.job_logs import JobLogsModel
 from app.db.models.llm import LlmAnalystModel, LlmProvidersModel
@@ -37,6 +38,7 @@ from .files_upload_session import FilesUploadSessionModel
 from .fine_tuning import FineTuningEventModel, FineTuningJobModel, OpenAIFileModel
 from .knowledge_base import KnowledgeBaseModel
 from .mcp_server import MCPServerModel, MCPServerWorkflowModel
+from .message_issue import MessageIssueModel
 from .ml_model import MLModel
 from .ml_model_pipeline import (
     ArtifactType,
@@ -52,8 +54,17 @@ from .user_group import UserGroupModel
 from .user_supervised_group import UserSupervisedGroupModel
 from .webhook import WebhookModel
 from .workflow import WorkflowModel
+from .workflow_schedule import WorkflowScheduleModel, WorkflowScheduleRunModel
+from .support_ticket import (
+    SupportTicketCommentModel,
+    SupportTicketEventModel,
+    SupportTicketModel,
+    TicketSyncOutboxModel,
+)
 
 __all__ = [
+    "WorkflowScheduleModel",
+    "WorkflowScheduleRunModel",
     # Primary model class names
     "OperatorModel",
     "OperatorStatisticsModel",
@@ -114,6 +125,12 @@ __all__ = [
     "PromptConfigModel",
     "FilesUploadSessionModel",
     "AudioProvidersModel",
+    "FallbackChainModel",
+    "MessageIssueModel",
+    "SupportTicketModel",
+    "SupportTicketCommentModel",
+    "SupportTicketEventModel",
+    "TicketSyncOutboxModel",
 ]
 
 models = [
@@ -166,6 +183,12 @@ models = [
     PromptVersionModel,
     PromptConfigModel,
     AudioProvidersModel,
+    FallbackChainModel,
+    MessageIssueModel,
+    SupportTicketModel,
+    SupportTicketCommentModel,
+    SupportTicketEventModel,
+    TicketSyncOutboxModel,
 ]
 
 auto_register_updated_by(models)
