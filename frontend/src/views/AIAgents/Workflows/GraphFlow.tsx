@@ -25,10 +25,12 @@ import WorkflowTestDialog from "./components/WorkflowTestDialog";
 import NodePanel from "./components/panels/NodePanel";
 import BottomPanel from "./components/panels/BottomPanel";
 import WorkflowsSavedPanel from "./components/panels/WorkflowsSavedPanel";
+import WorkflowTestChatPanel from "./components/panels/WorkflowTestChatPanel";
 import { useCanvasAssistant } from "./hooks/useCanvasAssistant";
 import { useSchemaValidation } from "./hooks/useSchemaValidation";
 import { useUndoRedo } from "./hooks/useUndoRedo";
 import { AgentConfig, getAgentConfig, updateAgentConfig } from "@/services/api";
+import { getApiKeys } from "@/services/apiKeys";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getWorkflowById, updateWorkflow } from "@/services/workflows";
 import AgentTopPanel from "./components/panels/AgentTopPanel";
@@ -63,6 +65,11 @@ const nodeTypes = getNodeTypes();
 const edgeTypes = getEdgeTypes();
 
 const PRO_OPTIONS = { hideAttribution: true }; // remove React Flow watermark
+
+// Width of the split-screen "Test Chat" side panel; right-side overlays shift
+// left by this (+ gap) so they stay within the shrunk canvas region.
+const TEST_CHAT_PANEL_WIDTH = 420;
+const TEST_CHAT_PANEL_GAP = 8;
 
 // Skip canvas undo/redo when focus is in a field the user is typing in
 const isEditableEventTarget = (target: HTMLElement): boolean =>
@@ -108,6 +115,8 @@ const GraphFlowContent: React.FC = () => {
 
   const [showNodePanel, setShowNodePanel] = useState(false);
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false);
+  const [showTestChat, setShowTestChat] = useState(false);
+  const [canOpenTestChat, setCanOpenTestChat] = useState(false);
   const [currentTestConfig, setCurrentTestConfig] = useState<Workflow | null>(
     null
   );
@@ -544,6 +553,34 @@ const GraphFlowContent: React.FC = () => {
     setShowWorkflowPanel(!showWorkflowPanel);
     if (showNodePanel) setShowNodePanel(false);
   };
+
+  // Whether the agent has an active API key — gates the "Test Chat" split view.
+  useEffect(() => {
+    const userId = agent?.user_id;
+    if (!userId) {
+      setCanOpenTestChat(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const keys = await getApiKeys(userId);
+        if (!cancelled) {
+          setCanOpenTestChat(keys.some((k) => k.is_active === 1));
+        }
+      } catch {
+        if (!cancelled) setCanOpenTestChat(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agent?.user_id]);
+
+  // If the agent loses its key (or none loads), make sure the panel can't linger.
+  useEffect(() => {
+    if (!canOpenTestChat) setShowTestChat(false);
+  }, [canOpenTestChat]);
 
   // Add updateNodeData callback to all nodes that need it
   useEffect(() => {
@@ -1023,11 +1060,19 @@ const GraphFlowContent: React.FC = () => {
     [workflow, nodes, edges]
   );
 
+  // When the Test Chat split view is open, right-anchored overlays shift left so
+  // they stay within the shrunk canvas region instead of covering the chat.
+  const isTestChatOpen = showTestChat && canOpenTestChat;
+  const testChatOffset = isTestChatOpen
+    ? TEST_CHAT_PANEL_WIDTH + TEST_CHAT_PANEL_GAP
+    : 0;
+
   return (
     <WorkflowProvider workflow={workflow} setWorkflow={setWorkflow}>
       <WorkflowExecutionProvider>
         <div className="h-full w-full flex flex-col">
-          <div className="flex-1 relative">
+          <div className="flex-1 flex flex-row min-h-0">
+            <div className="relative flex-1 min-w-0">
             <CanvasContextMenu
               onAddNode={handleAddNodeFromContextMenu}
               onUndo={undo}
@@ -1086,7 +1131,8 @@ const GraphFlowContent: React.FC = () => {
 
             {/* Unified top-right controls (prevents overlap between ReactFlow Panel + NodePanel buttons) */}
             <div
-              className={`fixed top-2 z-20 flex flex-row flex-wrap items-start justify-end gap-2 max-w-[calc(100vw-1rem)] transition-[right] duration-300 ${
+              style={{ marginRight: testChatOffset || undefined }}
+              className={`fixed top-2 z-20 flex flex-row flex-wrap items-start justify-end gap-2 max-w-[calc(100vw-1rem)] transition-[right,margin] duration-300 ${
                 (() => {
                   if (showNodePanel && showWorkflowPanel) {
                     return "right-[calc(360px+20rem+1rem)]";
@@ -1107,6 +1153,8 @@ const GraphFlowContent: React.FC = () => {
                 onTestWorkflow={handleTestGraph}
                 onSaveWorkflow={handleSaveWorkflow}
                 onExecutionStateChange={setExecutionState}
+                canOpenTestChat={canOpenTestChat}
+                onOpenTestChat={() => setShowTestChat(true)}
               />
 
               <div className="flex flex-col gap-2">
@@ -1149,6 +1197,7 @@ const GraphFlowContent: React.FC = () => {
               messages={assistant.messages}
               isThinking={assistant.isThinking}
               activeConversationalTab={conversationalTabActive}
+              rightOffset={testChatOffset}
               onSendMessage={(message) => {
                 assistant.sendMessage(message);
                 setHasStartedConversation(true);
@@ -1166,6 +1215,7 @@ const GraphFlowContent: React.FC = () => {
               refreshKey={refreshKey}
               hasUnsavedChanges={hasUnsavedChanges}
               onSaveWorkflow={handleSaveWorkflow}
+              rightOffset={testChatOffset}
             />
 
             <WorkflowTestDialog
@@ -1204,6 +1254,20 @@ const GraphFlowContent: React.FC = () => {
                 onExitAgent={exitNodeSearchAgentMode}
                 onSendAgentMessage={sendAgentMessageFromSearch}
               />
+            )}
+            </div>
+
+            {showTestChat && canOpenTestChat && (
+              <aside
+                style={{ width: TEST_CHAT_PANEL_WIDTH }}
+                className="h-full shrink-0 border-l bg-white shadow-lg"
+              >
+                <WorkflowTestChatPanel
+                  agentId={agentId}
+                  hasUnsavedChanges={hasUnsavedChanges}
+                  onClose={() => setShowTestChat(false)}
+                />
+              </aside>
             )}
           </div>
         </div>

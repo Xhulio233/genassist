@@ -1,6 +1,12 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/button";
-import { Download, Upload, PlayCircle, MoreVertical } from "lucide-react";
+import {
+  Download,
+  Upload,
+  PlayCircle,
+  MoreVertical,
+  MessageSquare,
+} from "lucide-react";
 import { useBlocker } from "react-router-dom";
 import { Workflow } from "@/interfaces/workflow.interface";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -12,6 +18,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/dropdown-menu";
 
@@ -22,6 +29,9 @@ interface BottomPanelProps {
   onTestWorkflow: (workflow: Workflow) => void;
   onSaveWorkflow?: (workflow: Workflow) => Promise<void>;
   onExecutionStateChange?: (executionState: WorkflowExecutionState) => void;
+  /** Show the "Test Chat" action (only when the agent has an active API key). */
+  canOpenTestChat?: boolean;
+  onOpenTestChat?: () => void;
 }
 
 const BottomPanel: React.FC<BottomPanelProps> = ({
@@ -31,6 +41,8 @@ const BottomPanel: React.FC<BottomPanelProps> = ({
   onTestWorkflow,
   onSaveWorkflow,
   onExecutionStateChange,
+  canOpenTestChat = false,
+  onOpenTestChat,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -217,6 +229,15 @@ const BottomPanel: React.FC<BottomPanelProps> = ({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {canOpenTestChat && onOpenTestChat && (
+              <>
+                <DropdownMenuItem onClick={onOpenTestChat}>
+                  <MessageSquare className="mr-2 h-4 w-4" />
+                  <span>Test Chat</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onClick={handleSaveToFile}>
               <Download className="mr-2 h-4 w-4" />
               <span>Download</span>

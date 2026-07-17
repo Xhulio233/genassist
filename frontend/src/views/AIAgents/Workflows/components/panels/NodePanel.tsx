@@ -49,6 +49,8 @@ interface NodePanelProps {
   isThinking?: boolean;
   activeConversationalTab?: boolean;
   onSendMessage?: (message: string) => void;
+  /** Extra right margin (px) so the panel clears a right-side split view. */
+  rightOffset?: number;
 }
 
 interface HelpDialogState {
@@ -67,6 +69,7 @@ const NodePanel: React.FC<NodePanelProps> = ({
   isThinking = false,
   activeConversationalTab = false,
   onSendMessage,
+  rightOffset = 0,
 }) => {
   const nodeCategories = nodeRegistry.getAllCategories();
   const [draggingNodeType, setDraggingNodeType] = useState<string | null>(null);
@@ -396,6 +399,7 @@ const NodePanel: React.FC<NodePanelProps> = ({
       ></div>
 
       <div
+        style={{ marginRight: rightOffset }}
         className={`fixed top-2 right-2 h-[calc(100vh-1rem)] w-[360px] bg-primary-foreground shadow-lg rounded-xl transition-transform duration-300 border ${
           selectedHelp ? "z-40" : "z-[1001]"
         } ${

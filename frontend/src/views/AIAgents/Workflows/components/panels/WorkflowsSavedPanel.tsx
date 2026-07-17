@@ -45,6 +45,8 @@ interface WorkflowsSavedPanelProps {
   refreshKey: number;
   hasUnsavedChanges: boolean;
   onSaveWorkflow: () => Promise<void>;
+  /** Extra right margin (px) so the panel clears a right-side split view. */
+  rightOffset?: number;
 }
 
 // Format an ISO timestamp for the "Edited … · <when>" line on version cards.
@@ -71,6 +73,7 @@ const WorkflowsSavedPanel: React.FC<WorkflowsSavedPanelProps> = ({
   refreshKey,
   hasUnsavedChanges,
   onSaveWorkflow,
+  rightOffset = 0,
 }) => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -371,6 +374,7 @@ const WorkflowsSavedPanel: React.FC<WorkflowsSavedPanelProps> = ({
 
   return (
     <div
+      style={{ marginRight: rightOffset }}
       className="fixed top-2 right-2 h-[calc(100vh-1rem)] w-80 bg-white border shadow-lg rounded-lg transform transition-transform duration-200 ease-in-out translate-x-0 animate-in slide-in-from-right"
     >
       <div className="h-full flex flex-col">
