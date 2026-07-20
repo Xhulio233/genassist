@@ -79,6 +79,35 @@ export const SLACK_MESSENGER_HELP_CONTENT: NodeHelpContent = {
   ],
 };
 
+export const TELEGRAM_MESSENGER_HELP_CONTENT: NodeHelpContent = {
+  intro:
+    "The Telegram Messenger node sends messages to Telegram chats, channels, or users through a Telegram bot directly from a workflow. It is ideal for alerts, updates, and customer-facing automations.",
+  sections: [
+    {
+      title: "Overview & Use Cases",
+      body: "Use the Telegram Messenger node when you need to:",
+      bullets: [
+        "Send automated Telegram messages",
+        "Notify users or teams about workflow events",
+        "Broadcast updates to a Telegram channel",
+        "Support messaging-based automation",
+      ],
+    },
+    {
+      title: "Configuring the node",
+      steps: [
+        "Click the settings icon in the node header.",
+        "The Configure Telegram Messenger dialog will open.",
+        "Enter the Node Name.",
+        "Select the optional Configuration Vars entry for the Telegram bot setup.",
+        "Enter the Chat ID (numeric chat ID or @channelusername).",
+        "Add the Message content to send.",
+        "Save the node configuration.",
+      ],
+    },
+  ],
+};
+
 export const ZENDESK_TICKET_CREATOR_HELP_CONTENT: NodeHelpContent = {
   intro:
     "The Zendesk Ticket Creator node creates new Zendesk tickets from workflow data. It is useful for turning detected issues, requests, or support events into trackable support records.",

@@ -49,6 +49,7 @@ from app.modules.workflow.engine.nodes import (
     SlackToolNode,
     SQLNode,
     STTNode,
+    TelegramToolNode,
     TemplateNode,
     ThreadRAGNode,
     ToolBuilderNode,
@@ -119,6 +120,7 @@ class WorkflowEngine:
         cls._node_registry["dataMapperNode"] = DataMapperNode
         cls._node_registry["toolBuilderNode"] = ToolBuilderNode
         cls._node_registry["slackMessageNode"] = SlackToolNode
+        cls._node_registry["telegramToolNode"] = TelegramToolNode
         cls._node_registry["calendarEventNode"] = CalendarEventsNode
         cls._node_registry["readMailsNode"] = ReadMailsToolNode
         cls._node_registry["gmailNode"] = GmailToolNode

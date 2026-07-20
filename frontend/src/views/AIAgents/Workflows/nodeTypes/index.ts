@@ -76,9 +76,11 @@ import {
   CALENDAR_EVENT_NODE_DEFINITION,
   READ_MAILS_NODE_DEFINITION,
   WHATSAPP_NODE_DEFINITION,
+  TELEGRAM_NODE_DEFINITION,
   JIRA_NODE_DEFINITION,
 } from "@/views/AIAgents/Workflows/nodeTypes/integrations/definition";
 import WhatsAppNode from "./integrations/whatsappNode";
+import TelegramNode from "./integrations/telegramNode";
 import {
   ROUTER_NODE_DEFINITION,
   AGGREGATOR_NODE_DEFINITION,
@@ -117,6 +119,8 @@ export const registerAllNodeTypes = () => {
   nodeRegistry.registerNodeType(OPEN_API_NODE_DEFINITION);
 
   nodeRegistry.registerNodeType(WHATSAPP_NODE_DEFINITION);
+
+  nodeRegistry.registerNodeType(TELEGRAM_NODE_DEFINITION);
 
   nodeRegistry.registerNodeType(CHAT_INPUT_NODE_DEFINITION);
 
@@ -199,6 +203,7 @@ export const getNodeTypes = () => {
 
     slackMessageNode: SlackOutputNode,
     whatsappToolNode: WhatsAppNode,
+    telegramToolNode: TelegramNode,
     zendeskTicketNode: ZendeskTicketNode,
     salesforceCaseNode: SalesforceCaseNode,
     gmailNode: GmailNode,

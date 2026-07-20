@@ -36,6 +36,7 @@ from .router_node import RouterNode
 from .salesforce_tool_node import SalesforceToolNode
 from .set_state_node import SetStateNode
 from .slack_tool_node import SlackToolNode
+from .telegram_tool_node import TelegramToolNode
 from .stt_node import STTNode
 from .sql_node import SQLNode
 from .thread_rag_node import ThreadRAGNode
@@ -64,6 +65,7 @@ __all__ = [
     "DataMapperNode",
     "ToolBuilderNode",
     "SlackToolNode",
+    "TelegramToolNode",
     "CalendarEventsNode",
     "ReadMailsToolNode",
     "GmailToolNode",

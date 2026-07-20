@@ -732,6 +732,27 @@ Tool connections — both edges required:
 
 ---
 
+### telegramToolNode — Telegram Message
+**Category:** Integration
+**Purpose:** Sends messages to a Telegram chat, channel, or user via a bot. Requires Telegram integration configuration.
+**Use cases:** Channel notifications, workflow completion alerts, automated user outreach.
+
+**Handlers:**
+| ID | Type | Position | Compatibility |
+|---|---|---|---|
+| input | target | left | any |
+| output | source | right | any |
+
+**Config:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| app_settings_id | select | Yes | Telegram integration settings |
+| chat_id | text | Yes | Target chat/channel ID or @channelusername |
+| message | text | Yes | Message text |
+| name | text | No | Node name |
+
+---
+
 ### zendeskTicketNode — Zendesk Ticket
 **Category:** Integration
 **Purpose:** Creates support tickets in Zendesk. Requires Zendesk integration configuration.

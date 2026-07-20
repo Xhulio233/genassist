@@ -26,6 +26,7 @@ INTEGRATION_DESCRIPTIONS = {
     "Gmail": "Send via Gmail",
     "WhatsApp": "Send WhatsApp messages",
     "Slack": "Send Slack messages",
+    "Telegram": "Send Telegram messages",
     "Microsoft": "Microsoft 365 integration",
     "Jira": "Create Jira issues",
     "Other": "Custom integration",

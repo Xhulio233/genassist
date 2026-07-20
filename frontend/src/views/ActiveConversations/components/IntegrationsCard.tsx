@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Mail, Headset, MessageSquare, MessageCircle, Calendar, Settings } from "lucide-react";
+import { Mail, Headset, MessageSquare, MessageCircle, Send, Calendar, Settings } from "lucide-react";
 import { Card } from "@/components/card";
 import { IntegrationWorkflowsDialog } from "./IntegrationWorkflowsDialog";
 import { fetchDashboardIntegrations } from "@/services/dashboard";
@@ -7,7 +7,7 @@ import type { IntegrationItem as ApiIntegrationItem } from "@/interfaces/dashboa
 import { PageListSkeleton } from "@/components/skeletons";
 import { useNavigate } from "react-router-dom";
 
-type IconType = "mail" | "headset" | "slack" | "whatsapp" | "calendar" | "other";
+type IconType = "mail" | "headset" | "slack" | "whatsapp" | "telegram" | "calendar" | "other";
 
 interface Integration {
   id: string;
@@ -31,6 +31,7 @@ const getIconTypeFromIntegrationType = (type: string): IconType => {
     zendesk: "headset",
     slack: "slack",
     whatsapp: "whatsapp",
+    telegram: "telegram",
     microsoft: "calendar",
     jira: "other",
     other: "other",
@@ -54,6 +55,7 @@ const getDefaultDescription = (type: string): string => {
     zendesk: "Create support tickets",
     slack: "Send Slack messages",
     whatsapp: "Send WhatsApp messages",
+    telegram: "Send Telegram messages",
     microsoft: "Microsoft 365 integration",
     jira: "Create Jira issues",
     other: "Custom integration",
@@ -73,6 +75,8 @@ const getIcon = (iconType: IconType) => {
       return <MessageSquare {...iconProps} />;
     case "whatsapp":
       return <MessageCircle {...iconProps} />;
+    case "telegram":
+      return <Send {...iconProps} />;
     case "calendar":
       return <Calendar {...iconProps} />;
     case "other":

@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import SlackLogo from "@/assets/slack-logo.png";
 import WhatsAppLogo from "@/assets/whatsapp-logo.png";
+import TelegramLogo from "@/assets/telegram-logo.png";
 import JiraLogo from "@/assets/jira-logo.png";
 import ZendeskLogo from "@/assets/zendesk-logo.png";
 import SalesforceLogo from "@/assets/salesforce-logo.png";
@@ -107,6 +108,7 @@ export const ICON_MAPPING: Record<string, IconConfig> = {
   // Custom asset icons
   Slack: { type: "asset", source: SlackLogo },
   Whatsapp: { type: "asset", source: WhatsAppLogo },
+  Telegram: { type: "asset", source: TelegramLogo },
   Jira: { type: "asset", source: JiraLogo },
   Zendesk: { type: "asset", source: ZendeskLogo },
   Salesforce: { type: "asset", source: SalesforceLogo },

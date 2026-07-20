@@ -18,6 +18,7 @@ from app.modules.workflow.engine.nodes.python_tool_node import PythonToolNode
 from app.modules.workflow.engine.nodes.data_mapper_node import DataMapperNode
 from app.modules.workflow.engine.nodes.tool_builder_node import ToolBuilderNode
 from app.modules.workflow.engine.nodes.slack_tool_node import SlackToolNode
+from app.modules.workflow.engine.nodes.telegram_tool_node import TelegramToolNode
 from app.modules.workflow.engine.nodes.calendar_events_node import CalendarEventsNode
 from app.modules.workflow.engine.nodes.read_mails_tool_node import ReadMailsToolNode
 from app.modules.workflow.engine.nodes.gmail_tool_node import GmailToolNode
@@ -41,6 +42,7 @@ __all__ = [
     "DataMapperNode",
     "ToolBuilderNode",
     "SlackToolNode",
+    "TelegramToolNode",
     "CalendarEventsNode",
     "ReadMailsToolNode",
     "GmailToolNode",

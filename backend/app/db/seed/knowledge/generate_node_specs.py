@@ -248,6 +248,16 @@ NODE_DESCRIPTIONS = {
             "Automated WhatsApp outreach",
         ],
     },
+    "telegramToolNode": {
+        "category": "Integration",
+        "description": "Sends a message to a Telegram chat, channel, or user via a bot. Requires Telegram integration configuration (app_settings_id).",
+        "when_to_use": "When the workflow needs to send Telegram messages.",
+        "example_use_cases": [
+            "Notifying a Telegram channel about a new support ticket",
+            "Sending workflow completion alerts to Telegram",
+            "Automated Telegram outreach to users",
+        ],
+    },
     "zendeskTicketNode": {
         "category": "Integration",
         "description": "Creates a support ticket in Zendesk with subject, description, requester info, and tags. Requires Zendesk integration configuration (app_settings_id).",

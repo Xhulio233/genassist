@@ -40,6 +40,7 @@ SUPPORTED_NODE_TYPES = [
     "dataMapperNode",
     "toolBuilderNode",
     "slackMessageNode",
+    "telegramToolNode",
     "calendarEventNode",
     "readMailsNode",
     "gmailNode",

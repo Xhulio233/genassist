@@ -175,6 +175,20 @@ APP_SETTINGS_SCHEMAS: Dict[str, TypeSchema] = {
             ),
         ],
     ),
+    "Telegram": TypeSchema(
+        name="Telegram",
+        fields=[
+            FieldSchema(
+                name="telegram_bot_token",
+                label="Telegram Bot Token",
+                type="password",
+                required=True,
+                placeholder="Enter Telegram Bot Token",
+                description="Bot token issued by @BotFather (e.g. 123456789:ABC-DEF...)",
+                encrypted=False,
+            ),
+        ],
+    ),
     "Jira": TypeSchema(
         name="Jira",
         fields=[

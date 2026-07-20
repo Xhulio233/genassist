@@ -6,6 +6,7 @@ import {
   ReadMailsNodeData,
   SalesforceCaseNodeData,
   SlackOutputNodeData,
+  TelegramNodeData,
   WhatsappNodeData,
   ZendeskTicketNodeData,
 } from "../../types/nodes";
@@ -16,6 +17,7 @@ import ZendeskTicketNode from "./zendeskTicketNode";
 import SalesforceCaseNode from "./salesforceCaseNode";
 import SlackOutputNode from "./slackOutputNode";
 import WhatsAppNode from "./whatsappNode";
+import TelegramNode from "./telegramNode";
 import CalendarEventNode from "./calendarEventNode";
 import ReadMailsNode from "./readMailsNode";
 import JiraNode from "./jiraNode";
@@ -26,6 +28,7 @@ import {
   JIRA_TASK_CREATOR_HELP_CONTENT,
   SALESFORCE_CASE_CREATOR_HELP_CONTENT,
   SLACK_MESSENGER_HELP_CONTENT,
+  TELEGRAM_MESSENGER_HELP_CONTENT,
   WHATSAPP_MESSENGER_HELP_CONTENT,
   ZENDESK_TICKET_CREATOR_HELP_CONTENT,
 } from "./helperDefinition";
@@ -247,6 +250,47 @@ export const WHATSAPP_NODE_DEFINITION: NodeTypeDefinition<WhatsappNodeData> = {
   createNode: (id, position, data) => ({
     id,
     type: "whatsappToolNode",
+    position,
+    data: {
+      ...data,
+    },
+  }),
+};
+
+export const TELEGRAM_NODE_DEFINITION: NodeTypeDefinition<TelegramNodeData> = {
+  type: "telegramToolNode",
+  label: "Telegram Messenger",
+  description: "Sends a message to a Telegram chat, channel, or user via a bot.",
+  shortDescription: "Send a Telegram message",
+  helpContent: TELEGRAM_MESSENGER_HELP_CONTENT,
+  configSubtitle:
+    "Configure Telegram messaging settings, including chat and message content.",
+  category: "integrations",
+  icon: "Telegram",
+  defaultData: {
+    name: "Telegram Messenger",
+    message: "",
+    chat_id: "",
+    app_settings_id: undefined,
+    handlers: [
+      {
+        id: "input",
+        type: "target",
+        compatibility: "any",
+        position: "left",
+      },
+      {
+        id: "output",
+        type: "source",
+        compatibility: "any",
+        position: "right",
+      },
+    ],
+  },
+  component: TelegramNode as React.ComponentType<NodeProps<NodeData>>,
+  createNode: (id, position, data) => ({
+    id,
+    type: "telegramToolNode",
     position,
     data: {
       ...data,

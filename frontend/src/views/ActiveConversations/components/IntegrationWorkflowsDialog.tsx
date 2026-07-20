@@ -10,14 +10,14 @@ import {
 import { Button } from "@/components/button";
 import { Workflow } from "@/interfaces/workflow.interface";
 import { getAllWorkflows } from "@/services/workflows";
-import { Mail, Headset, MessageSquare, MessageCircle, Calendar, ExternalLink, Clock, Sparkles } from "lucide-react";
+import { Mail, Headset, MessageSquare, MessageCircle, Send, Calendar, ExternalLink, Clock, Sparkles } from "lucide-react";
 import { format } from "date-fns";
 
 interface Integration {
   id: string;
   name: string;
   description: string;
-  icon: "mail" | "headset" | "slack" | "whatsapp" | "calendar";
+  icon: "mail" | "headset" | "slack" | "whatsapp" | "telegram" | "calendar";
   iconColor: string;
   bgColor: string;
 }
@@ -39,6 +39,8 @@ const getNodeTypesForIntegration = (iconType: Integration["icon"]): string[] => 
       return ["slackMessageNode"];
     case "whatsapp":
       return ["whatsappToolNode"];
+    case "telegram":
+      return ["telegramToolNode"];
     case "calendar":
       return ["calendarEventNode"];
     default:
@@ -58,6 +60,8 @@ const getIcon = (iconType: Integration["icon"], className: string = "w-5 h-5") =
       return <MessageSquare {...iconProps} />;
     case "whatsapp":
       return <MessageCircle {...iconProps} />;
+    case "telegram":
+      return <Send {...iconProps} />;
     case "calendar":
       return <Calendar {...iconProps} />;
     default:

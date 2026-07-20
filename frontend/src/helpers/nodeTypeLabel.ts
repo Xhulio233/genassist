@@ -37,6 +37,7 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   readMailsNode: "Email Reader",
   slackMessageNode: "Slack Messenger",
   whatsappToolNode: "WhatsApp Messenger",
+  telegramToolNode: "Telegram Messenger",
   zendeskTicketNode: "Zendesk Ticket Creator",
   calendarEventNode: "Calendar Scheduler",
   jiraNode: "Jira Task Creator",

@@ -81,6 +81,13 @@ export interface WhatsappNodeData extends BaseNodeData {
   app_settings_id?: string; // ID of the app setting to use for this node
 }
 
+// Telegram Output Node Data
+export interface TelegramNodeData extends BaseNodeData {
+  chat_id?: string; // target Telegram chat/channel ID or @channelusername
+  message?: string; // the message to send to Telegram
+  app_settings_id?: string; // ID of the app setting to use for this node
+}
+
 export interface RouterNodeData extends BaseNodeData {
   /** Stored as boolean; string "true"/"false" may appear from older persisted JSON. */
   smartModeEnabled?: boolean | string;
@@ -591,6 +598,7 @@ export type NodeData =
   | DataMapperNodeData
   | SlackOutputNodeData
   | WhatsappNodeData
+  | TelegramNodeData
   | RouterNodeData
   | NlpNodeData
   | AggregatorNodeData

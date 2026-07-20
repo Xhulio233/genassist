@@ -62,6 +62,7 @@ async def test_get_schemas_endpoint(authorized_client):
     assert "Gmail" in data
     assert "Microsoft" in data
     assert "Slack" in data
+    assert "Telegram" in data
     # Verify schema structure
     if "Zendesk" in data:
         zendesk_schema = data["Zendesk"]

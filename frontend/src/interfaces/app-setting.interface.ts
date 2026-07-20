@@ -10,6 +10,7 @@ export interface AppSetting {
     | "Gmail"
     | "Microsoft"
     | "Slack"
+    | "Telegram"
     | "Jira"
     | "FileManagerSettings"
     | "Security"

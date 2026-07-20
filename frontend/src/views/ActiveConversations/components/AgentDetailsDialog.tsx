@@ -145,6 +145,7 @@ export function AgentDetailsDialog({
         type.includes("gmail") ||
         type.includes("slack") ||
         type.includes("whatsapp") ||
+        type.includes("telegram") ||
         type.includes("zendesk") ||
         type.includes("calendar") ||
         type.includes("jira")
@@ -185,6 +186,8 @@ export function AgentDetailsDialog({
         nodeTypes.add("Slack");
       } else if (type.includes("whatsapp")) {
         nodeTypes.add("WhatsApp");
+      } else if (type.includes("telegram")) {
+        nodeTypes.add("Telegram");
       } else if (type.includes("zendesk")) {
         nodeTypes.add("Zendesk");
       } else if (type.includes("calendar")) {
