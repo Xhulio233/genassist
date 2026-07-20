@@ -7,18 +7,21 @@ import {
   GuardrailProvenanceNodeData,
   GuardrailNliNodeData,
   FileReaderNodeData,
+  WaitDelayNodeData,
 } from '../../types/nodes';
 import TemplateNode from "./templateNode";
 import DataMapperNode from "./dataMapperNode";
 import GuardrailProvenanceNode from "./guardrailProvenanceNode";
 import GuardrailNliNode from "./guardrailNliNode";
 import FileReaderNode from './fileReaderNode';
+import WaitDelayNode from './waitDelayNode';
 import {
   DATA_TRANSFORMER_HELP_CONTENT,
   FILE_READER_HELP_CONTENT,
   GUARDRAIL_NLI_HELP_CONTENT,
   GUARDRAIL_PROVENANCE_HELP_CONTENT,
   TEXT_TEMPLATE_HELP_CONTENT,
+  WAIT_DELAY_HELP_CONTENT,
 } from "./helperDefinition";
 
 export const TEMPLATE_NODE_DEFINITION: NodeTypeDefinition<TemplateNodeData> = {
@@ -241,6 +244,49 @@ export const FILE_READER_NODE_DEFINITION: NodeTypeDefinition<FileReaderNodeData>
   createNode: (id, position, data) => ({
     id,
     type: 'fileReaderNode',
+    position,
+    data: {
+      ...data,
+    },
+  }),
+};
+
+export const WAIT_DELAY_NODE_DEFINITION: NodeTypeDefinition<WaitDelayNodeData> = {
+  type: "waitDelayNode",
+  label: "Wait / Delay",
+  description:
+    "Pauses the workflow for a set duration or until a specific date and time, then passes its input through unchanged.",
+  shortDescription: "Pause execution",
+  helpContent: WAIT_DELAY_HELP_CONTENT,
+  configSubtitle:
+    "Pause execution for a relative duration or until an absolute timestamp.",
+  category: "utils",
+  icon: "Timer",
+  defaultData: {
+    name: "Wait / Delay",
+    mode: "duration",
+    duration: 5,
+    durationUnit: "seconds",
+    timestamp: "",
+    handlers: [
+      {
+        id: "input",
+        type: "target",
+        compatibility: "any",
+        position: "left",
+      },
+      {
+        id: "output",
+        type: "source",
+        compatibility: "any",
+        position: "right",
+      },
+    ],
+  },
+  component: WaitDelayNode as React.ComponentType<NodeProps<NodeData>>,
+  createNode: (id, position, data) => ({
+    id,
+    type: "waitDelayNode",
     position,
     data: {
       ...data,

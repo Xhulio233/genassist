@@ -42,6 +42,7 @@ from .thread_rag_node import ThreadRAGNode
 from .tool_builder_node import ToolBuilderNode
 from .tts_node import TTSNode
 from .voice_agent_node import VoiceAgentNode
+from .wait_delay_node import WaitDelayNode
 from .web_scraper_node import WebScraperNode
 from .web_search_node import WebSearchNode
 from .whatsapp_tool_node import WhatsAppToolNode
@@ -85,6 +86,7 @@ __all__ = [
     "GuardrailProvenanceNode",
     "GuardrailNliNode",
     "FileReaderNode",
+    "WaitDelayNode",
     "TTSNode",
     "STTNode",
     "VoiceAgentNode",

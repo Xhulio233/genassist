@@ -625,9 +625,10 @@ class WorkflowState:
         )
         performance_metrics = self.performance_metrics
 
-        # Detect awaiting_input from node output (HumanInTheLoopNode returns form_schema as output)
-        if isinstance(output, dict) and output.get("status") == "awaiting_input":
-            status = "awaiting_input"
+        # Detect a paused status from node output: HumanInTheLoopNode returns
+        # "awaiting_input"; WaitDelayNode returns "waiting" (suspended on a timer).
+        if isinstance(output, dict) and output.get("status") in ("awaiting_input", "waiting"):
+            status = output["status"]
         else:
             status = "success"
 

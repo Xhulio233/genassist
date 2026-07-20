@@ -61,6 +61,13 @@ class ProjectSettings(BaseSettings):
     # (worker died mid-run). Kept above the 2h execution timeout + buffer so a
     # genuinely long run is never failed prematurely.
     WORKFLOW_SCHEDULE_RUNNING_MAX_AGE_SECONDS: int = 7800  # 2h10m
+    # Resume suspended Wait/Delay node executions whose resume_at has passed.
+    CELERY_ENABLE_CHECK_DUE_WORKFLOW_WAITS_TASK: bool = True
+    CELERY_ENABLE_RECONCILE_STUCK_WORKFLOW_WAITS_TASK: bool = True
+    # A Wait still WAITING/RESUMING this many seconds past its resume_at is
+    # presumed orphaned (worker crashed after the wait elapsed) and marked FAILED.
+    # Kept above the 2h resume execution timeout + buffer.
+    WORKFLOW_WAIT_STUCK_MAX_AGE_SECONDS: int = 9000  # 2h30m
     CELERY_ENABLE_SUMMARIZE_FILES_FROM_AZURE_TASK: bool = True
     CELERY_ENABLE_AGGREGATE_AGENT_ANALYTICS_TASK: bool = True
     CELERY_ENABLE_BACKFILL_CUSTOM_ATTRIBUTES_TASK: bool = True

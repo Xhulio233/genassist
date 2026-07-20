@@ -62,6 +62,7 @@ SUPPORTED_NODE_TYPES = [
     "guardrailProvenanceNode",
     "guardrailNliNode",
     "fileReaderNode",
+    "waitDelayNode",
     "externalAgentNode",
     "ttsNode",
     "sttNode",
@@ -249,10 +250,17 @@ async def execute_workflow(
             "edges": workflow.edges,
         }
         thread_id = input_data.get("thread_id", str(uuid.uuid4()))
+        # Resume re-enters at the paused node (HITL form submit, or a Wait/Delay
+        # node whose timer has elapsed); otherwise start from the beginning.
+        start_node_id = input_data.get("human_in_the_loop_node_id") or input_data.get(
+            "wait_resume_node_id"
+        )
         workflow_engine = WorkflowEngine(workflow_config)
 
         state = await workflow_engine.execute_from_node(
-            input_data=input_data, thread_id=thread_id
+            start_node_id=start_node_id,
+            input_data=input_data,
+            thread_id=thread_id,
         )
 
         return state.format_state_as_response()
@@ -327,7 +335,11 @@ async def test_workflow(
         workflow_engine = WorkflowEngine(workflow_config)
 
         thread_id = input_data.get("thread_id", str(uuid.uuid4()))
-        start_node_id = input_data.get("human_in_the_loop_node_id")
+        # Resume re-enters at the paused node: a HITL form submission or a
+        # Wait/Delay node whose client-driven timer has elapsed.
+        start_node_id = input_data.get("human_in_the_loop_node_id") or input_data.get(
+            "wait_resume_node_id"
+        )
 
         state = await workflow_engine.execute_from_node(
             start_node_id=start_node_id,

@@ -57,12 +57,14 @@ import {
   GUARDRAIL_PROVENANCE_NODE_DEFINITION,
   GUARDRAIL_NLI_NODE_DEFINITION,
   FILE_READER_NODE_DEFINITION,
+  WAIT_DELAY_NODE_DEFINITION,
 } from './utils/definitions';
 import TemplateNode from "./utils/templateNode";
 import DataMapperNode from "./utils/dataMapperNode";
 import GuardrailProvenanceNode from "./utils/guardrailProvenanceNode";
 import GuardrailNliNode from "./utils/guardrailNliNode";
 import FileReaderNode from './utils/fileReaderNode';
+import WaitDelayNode from './utils/waitDelayNode';
 import SetStateNode from "./chat/setStateNode";
 import SlackOutputNode from "./integrations/slackOutputNode";
 import ZendeskTicketNode from "./integrations/zendeskTicketNode";
@@ -171,6 +173,8 @@ export const registerAllNodeTypes = () => {
 
   nodeRegistry.registerNodeType(FILE_READER_NODE_DEFINITION);
 
+  nodeRegistry.registerNodeType(WAIT_DELAY_NODE_DEFINITION);
+
   nodeRegistry.registerNodeType(TTS_NODE_DEFINITION);
   nodeRegistry.registerNodeType(STT_NODE_DEFINITION);
 };
@@ -221,6 +225,7 @@ export const getNodeTypes = () => {
     workflowExecutorNode: WorkflowExecutorNode,
     humanInTheLoopNode: HumanInTheLoopNode,
     fileReaderNode: FileReaderNode,
+    waitDelayNode: WaitDelayNode,
     ttsNode: TTSNode,
     sttNode: STTNode,
   };

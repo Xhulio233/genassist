@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -32,6 +32,7 @@ import {
   ChevronRight,
   RefreshCw,
   ClipboardList,
+  Clock,
   Volume2,
   MessageSquareText,
   Bug,
@@ -92,6 +93,19 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
   const [pausedFormSchema, setPausedFormSchema] = useState<PausedFormSchema | null>(null);
   const [pausedThreadId, setPausedThreadId] = useState<string | null>(null);
   const [pausedNodeId, setPausedNodeId] = useState<string | null>(null);
+  // Timer-based pause (Wait/Delay node): execution suspends until the wait time
+  // is over, then the client re-invokes the workflow to resume it.
+  const [waitingInfo, setWaitingInfo] = useState<{
+    resumeAt?: string;
+    waitSeconds?: number;
+    message?: string;
+    threadId?: string;
+    nodeId?: string;
+  } | null>(null);
+  // Seconds remaining on the current wait, for the countdown display.
+  const [waitRemaining, setWaitRemaining] = useState<number | null>(null);
+  // Guards against the auto-resume timer and a manual "Resume now" both firing.
+  const resumingRef = useRef(false);
   const [humanInTheLoopFormData, setHumanInTheLoopFormData] = useState<Record<string, string>>({});
   // Generate thread_id function
   const generateThreadId = () => {
@@ -193,6 +207,106 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
     return res.status === "awaiting_input" || res.state?.status === "paused";
   };
 
+  // Check if a response indicates a timer-suspended workflow (Wait/Delay node)
+  const isWaitingResponse = (res: WorkflowTestResponse): boolean => {
+    const output = res.output as unknown;
+    return (
+      res.status === "waiting" ||
+      (output != null &&
+        typeof output === "object" &&
+        (output as Record<string, unknown>).status === "waiting")
+    );
+  };
+
+  // Handle a timer-suspended response: show a live countdown and, when it
+  // elapses, re-invoke the workflow at the wait node to resume it (client-driven,
+  // mirroring the HITL resume). Also reachable immediately via "Resume now".
+  const handleWaitingResponse = (res: WorkflowTestResponse) => {
+    setPausedFormSchema(null);
+    setPausedThreadId(null);
+    setPausedNodeId(null);
+    const output = res.output as unknown;
+    const info =
+      output != null && typeof output === "object"
+        ? (output as Record<string, unknown>)
+        : {};
+    const threadId = (res.thread_id ||
+      res.state?.input?.thread_id ||
+      info.thread_id) as string | undefined;
+    setWaitingInfo({
+      resumeAt: typeof info.resume_at === "string" ? info.resume_at : undefined,
+      waitSeconds:
+        typeof info.wait_seconds === "number" ? info.wait_seconds : undefined,
+      message: typeof info.message === "string" ? info.message : undefined,
+      threadId,
+      nodeId: typeof info.node_id === "string" ? info.node_id : undefined,
+    });
+    // Do NOT store the paused response as the result — it isn't a failure, it's a
+    // pause. The waiting state (spinner + countdown) is driven by waitingInfo; the
+    // real result is set only once the wait resumes and the run completes.
+    setResponse(null);
+    setError(null);
+  };
+
+  // Resume a timer-suspended workflow (wait time over, or user clicked resume).
+  const resumeWait = async (threadId: string, nodeId: string) => {
+    if (!workflow || resumingRef.current) return;
+    resumingRef.current = true;
+    setTesting(true);
+    setError(null);
+    try {
+      const res = await testWorkflow({
+        input_data: {
+          thread_id: threadId,
+          wait_resume_node_id: nodeId,
+        },
+        workflow: workflow,
+      });
+      if (!res) {
+        setError("No response received from server");
+        return;
+      }
+      if (isWaitingResponse(res)) {
+        handleWaitingResponse(res); // chained wait: another Wait node downstream
+      } else if (isPausedResponse(res)) {
+        handlePausedResponse(res);
+      } else {
+        handleCompletedResponse(res);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Failed to resume workflow: ${msg}`);
+    } finally {
+      resumingRef.current = false;
+      setTesting(false);
+    }
+  };
+
+  // Drive the countdown and auto-resume once the wait time elapses.
+  useEffect(() => {
+    if (!waitingInfo || !waitingInfo.threadId || !waitingInfo.nodeId) {
+      setWaitRemaining(null);
+      return;
+    }
+    const targetMs = waitingInfo.resumeAt
+      ? new Date(waitingInfo.resumeAt).getTime()
+      : Date.now() + (waitingInfo.waitSeconds ?? 0) * 1000;
+    const compute = () => Math.max(0, Math.ceil((targetMs - Date.now()) / 1000));
+    setWaitRemaining(compute());
+
+    const interval = setInterval(() => setWaitRemaining(compute()), 1000);
+    const timeout = setTimeout(
+      () => resumeWait(waitingInfo.threadId!, waitingInfo.nodeId!),
+      Math.max(0, targetMs - Date.now())
+    );
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+    // resumeWait is stable enough for this effect; re-arm only when the wait changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingInfo]);
+
   // Extract pause info from the response
   const extractPauseInfo = (res: WorkflowTestResponse) => {
     // New path: form_schema is inside res.output (HumanInTheLoopNode returns it as output)
@@ -217,6 +331,7 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
       setError("Workflow paused but no form schema received");
       return;
     }
+    setWaitingInfo(null);
     setPausedFormSchema(formSchema);
     setPausedThreadId(threadId || null);
     setPausedNodeId(nodeId || formSchema.node_id || null);
@@ -231,6 +346,7 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
     setPausedFormSchema(null);
     setPausedThreadId(null);
     setPausedNodeId(null);
+    setWaitingInfo(null);
     const truncatedResponse = {
       ...res,
       output: truncateNodeOutput(res.output),
@@ -277,6 +393,7 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
     setError(null);
     setResponse(null);
     setPausedFormSchema(null);
+    setWaitingInfo(null);
 
     try {
       // Parse input values based on their schema types
@@ -338,7 +455,9 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
         return;
       }
 
-      if (isPausedResponse(res)) {
+      if (isWaitingResponse(res)) {
+        handleWaitingResponse(res);
+      } else if (isPausedResponse(res)) {
         handlePausedResponse(res);
       } else {
         handleCompletedResponse(res);
@@ -386,7 +505,9 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
         return;
       }
 
-      if (isPausedResponse(res)) {
+      if (isWaitingResponse(res)) {
+        handleWaitingResponse(res);
+      } else if (isPausedResponse(res)) {
         handlePausedResponse(res);
       } else {
         handleCompletedResponse(res);
@@ -404,6 +525,7 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
     setPausedFormSchema(null);
     setPausedThreadId(null);
     setPausedNodeId(null);
+    setWaitingInfo(null);
     setHumanInTheLoopFormData({});
     setResponse(null);
     setError(null);
@@ -668,7 +790,7 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
                 )}
 
                 {/* Primary action — run the workflow. */}
-                {!pausedFormSchema && (
+                {!pausedFormSchema && !waitingInfo && (
                   <Button
                     onClick={handleTestWorkflow}
                     disabled={testing || !workflow}
@@ -681,6 +803,62 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
                     )}
                     {testing ? "Running…" : "Test"}
                   </Button>
+                )}
+
+                {/* Suspended Workflow — Wait/Delay node (resumes on a timer) */}
+                {waitingInfo && (
+                  <div className="space-y-3 p-4 border-2 border-amber-200 rounded-lg bg-amber-50/50">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-amber-600" />
+                        <span className="font-medium text-amber-700">
+                          {testing ? "Resuming…" : "Waiting for input"}
+                        </span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-gray-500"
+                        onClick={handleStartOver}
+                      >
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                        Start Over
+                      </Button>
+                    </div>
+                    <p className="text-sm text-gray-600">
+                      {waitingInfo.message ||
+                        "Execution will continue when the wait time is over."}
+                    </p>
+                    {waitRemaining !== null && waitRemaining > 0 && !testing && (
+                      <p className="text-sm font-medium text-amber-700">
+                        Resuming in {waitRemaining}s
+                      </p>
+                    )}
+                    {waitingInfo.resumeAt && (
+                      <p className="text-xs text-gray-500">
+                        Resumes at{" "}
+                        {new Date(waitingInfo.resumeAt).toLocaleString()}
+                      </p>
+                    )}
+                    {waitingInfo.threadId && waitingInfo.nodeId && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={testing}
+                        onClick={() =>
+                          resumeWait(waitingInfo.threadId!, waitingInfo.nodeId!)
+                        }
+                        className="flex items-center gap-2"
+                      >
+                        {testing ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Send className="h-4 w-4" />
+                        )}
+                        Resume now
+                      </Button>
+                    )}
+                  </div>
                 )}
 
                 {/* Paused Workflow — Dynamic User Input Form */}
@@ -829,16 +1007,22 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
                     <Label className="text-sm font-semibold text-gray-700">
                       Result
                     </Label>
-                    {response && (
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${
-                          response.status === "success"
-                            ? "border-green-200 bg-green-50 text-green-700"
-                            : "border-red-200 bg-red-50 text-red-600"
-                        }`}
-                      >
-                        {response.status === "success" ? "Success" : "Failed"}
+                    {waitingInfo && !error ? (
+                      <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                        Waiting
                       </span>
+                    ) : (
+                      response && (
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                            response.status === "success"
+                              ? "border-green-200 bg-green-50 text-green-700"
+                              : "border-red-200 bg-red-50 text-red-600"
+                          }`}
+                        >
+                          {response.status === "success" ? "Success" : "Failed"}
+                        </span>
+                      )
                     )}
                   </div>
                   <Tabs
@@ -877,6 +1061,18 @@ const WorkflowTestDialog: React.FC<WorkflowTestDialogProps> = ({
                       error={error}
                       workflow={workflow}
                     />
+                  ) : waitingInfo && !error ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-gray-500">
+                      <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
+                      <div className="text-sm font-medium">
+                        {testing
+                          ? "Resuming…"
+                          : "Waiting for the wait time to finish"}
+                      </div>
+                      <div className="text-xs">
+                        Execution will continue when the wait time is over.
+                      </div>
+                    </div>
                   ) : testing && !response ? (
                     <div className="flex h-full items-center justify-center gap-2 text-sm text-gray-500">
                       <Loader2 className="h-4 w-4 animate-spin" />

@@ -36,6 +36,7 @@ import {
   TextSearch,
   ScanText,
   Image,
+  Timer,
 } from "lucide-react";
 import SlackLogo from "@/assets/slack-logo.png";
 import WhatsAppLogo from "@/assets/whatsapp-logo.png";
@@ -103,6 +104,7 @@ export const ICON_MAPPING: Record<string, IconConfig> = {
   TextSearch: { type: "lucide", source: TextSearch },
   ScanText: { type: "lucide", source: ScanText },
   Image: { type: "lucide", source: Image },
+  Timer: { type: "lucide", source: Timer },
 
   // Custom asset icons
   Slack: { type: "asset", source: SlackLogo },

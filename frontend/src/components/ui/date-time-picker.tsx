@@ -15,9 +15,16 @@ interface DateTimePickerProps {
   date: Date | undefined;
   setDate: (date: Date | undefined) => void;
   disabled?: (date: Date) => boolean;
+  /** Extra classes for the popover content (e.g. a higher z-index when used inside a modal/sheet). */
+  contentClassName?: string;
 }
 
-export function DateTimePicker({ date, setDate, disabled }: DateTimePickerProps) {
+export function DateTimePicker({
+  date,
+  setDate,
+  disabled,
+  contentClassName,
+}: DateTimePickerProps) {
   const handleDateSelect = (selectedDate: Date | undefined) => {
     if (selectedDate) {
       const newDateWithTime = date
@@ -50,7 +57,7 @@ export function DateTimePicker({ date, setDate, disabled }: DateTimePickerProps)
           {date ? format(date, "yyyy-MM-dd HH:mm") : <span>Pick a date</span>}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-auto p-0">
+      <PopoverContent className={cn("w-auto p-0", contentClassName)}>
         <Calendar
           mode="single"
           selected={date}

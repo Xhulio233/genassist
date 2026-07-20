@@ -57,6 +57,7 @@ from app.modules.workflow.engine.nodes import (
     TrainModelNode,
     TrainPreprocessNode,
     VoiceAgentNode,
+    WaitDelayNode,
     WebScraperNode,
     WebSearchNode,
     WhatsAppToolNode,
@@ -140,6 +141,7 @@ class WorkflowEngine:
         cls._node_registry["guardrailProvenanceNode"] = GuardrailProvenanceNode
         cls._node_registry["guardrailNliNode"] = GuardrailNliNode
         cls._node_registry["fileReaderNode"] = FileReaderNode
+        cls._node_registry["waitDelayNode"] = WaitDelayNode
         cls._node_registry["ttsNode"] = TTSNode
         cls._node_registry["sttNode"] = STTNode
         cls._node_registry["voiceAgentNode"] = VoiceAgentNode
@@ -181,6 +183,7 @@ class WorkflowEngine:
             "setStateNode",
             "nlpNode",
             "webSearchNode",
+            "waitDelayNode",
         }
 
         # Return True if node is NOT in the no-DB list (i.e., it needs DB)

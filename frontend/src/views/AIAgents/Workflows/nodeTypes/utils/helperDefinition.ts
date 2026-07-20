@@ -150,6 +150,35 @@ export const GUARDRAIL_NLI_HELP_CONTENT: NodeHelpContent = {
   ],
 };
 
+export const WAIT_DELAY_HELP_CONTENT: NodeHelpContent = {
+  intro:
+    "The Wait / Delay node pauses the workflow before continuing to the next step. It can wait for a relative duration (seconds, minutes, or hours) or until a specific date and time is reached. Whatever it receives as input is passed through unchanged once the wait completes.",
+  sections: [
+    {
+      title: "Overview & Use Cases",
+      body: "Use the Wait / Delay node when you need to:",
+      bullets: [
+        "Throttle or space out calls to rate-limited services",
+        "Wait a fixed amount of time between steps",
+        "Hold execution until a scheduled date and time",
+        "Give an external system time to finish processing before continuing",
+      ],
+    },
+    {
+      title: "Configuring the node",
+      steps: [
+        "Click the settings icon in the node header.",
+        "The Configure Wait / Delay dialog will open.",
+        "Enter the Node Name.",
+        "Choose the Wait mode: a relative Duration or an absolute Timestamp.",
+        "For Duration, set the amount and the unit (seconds, minutes, hours).",
+        "For Timestamp, pick the date and time to wait until.",
+        "Click Save Changes.",
+      ],
+    },
+  ],
+};
+
 export const FILE_READER_HELP_CONTENT: NodeHelpContent = {
   intro:
     "The File Reader node uploads a file and extracts its content for use in later workflow steps. It is useful when your flow needs to read documents or file-based inputs before processing, analysis, or generation.",

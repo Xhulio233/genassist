@@ -554,6 +554,16 @@ export interface FileReaderNodeData extends BaseNodeData {
   fileId?: string;
 }
 
+// Wait / Delay Node Data
+export interface WaitDelayNodeData extends BaseNodeData {
+  // "duration" pauses for a relative amount of time; "timestamp" waits until an
+  // absolute date/time is reached.
+  mode?: "duration" | "timestamp";
+  duration?: number;
+  durationUnit?: "seconds" | "minutes" | "hours";
+  timestamp?: string; // ISO 8601 datetime, used when mode === "timestamp"
+}
+
 // TTS Node Data
 export interface TTSNodeData extends BaseNodeData {
   text: string;
@@ -609,6 +619,7 @@ export type NodeData =
   | GuardrailProvenanceNodeData
   | GuardrailNliNodeData
   | FileReaderNodeData
+  | WaitDelayNodeData
   | ExternalAgentNodeData
   | TTSNodeData
   | STTNodeData
