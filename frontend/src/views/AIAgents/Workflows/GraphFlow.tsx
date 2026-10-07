@@ -26,7 +26,7 @@ import { NodeData } from "./types/nodes";
 import { Workflow } from "@/interfaces/workflow.interface";
 import WorkflowTestPanel, { TestRunRecord } from "./components/WorkflowTestPanel";
 import WorkflowEvaluationsTab from "./components/WorkflowEvaluationsTab";
-import NodePanel from "./components/panels/NodePanel";
+import NodePanel, { NODE_PANEL_DEFAULT_WIDTH_PX } from "./components/panels/NodePanel";
 import BottomPanel from "./components/panels/BottomPanel";
 import WorkflowsSavedPanel from "./components/panels/WorkflowsSavedPanel";
 import { useCanvasAssistant } from "./hooks/useCanvasAssistant";
@@ -171,6 +171,8 @@ const GraphFlowContent: React.FC = () => {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const [showNodePanel, setShowNodePanel] = useState(false);
+  const [nodePanelWidth, setNodePanelWidth] = useState(NODE_PANEL_DEFAULT_WIDTH_PX);
+  const [isResizingNodePanel, setIsResizingNodePanel] = useState(false);
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false);
   // When set, the Available Nodes sidebar is in "replace" mode: picking a node
   // there swaps this node instead of adding a new one.
@@ -276,6 +278,29 @@ const GraphFlowContent: React.FC = () => {
     // Fit the view after react-flow commits the new positions.
     requestAnimationFrame(() => reactFlowInstance?.fitView({ padding: 0.2, duration: 400 }));
   }, [nodes, edges, setNodes, reactFlowInstance]);
+
+  // Auto-arrange requested by the assistant after it changed the graph. The layout
+  // needs each node's rendered size, and nodes the assistant just added have none
+  // until React Flow has measured them, so the arrange waits for that (arranging
+  // straight away stacks them on top of each other).
+  const [autoArrangePending, setAutoArrangePending] = useState(false);
+  const requestAutoArrange = useCallback(() => setAutoArrangePending(true), []);
+  const handleAutoArrangeRef = useRef(handleAutoArrange);
+  handleAutoArrangeRef.current = handleAutoArrange;
+  useEffect(() => {
+    if (!autoArrangePending) return;
+    const allMeasured = nodes.every((n) => isGroupNode(n) || (n.width && n.height));
+    // Once everything is measured, give a node that is resizing (its content just
+    // changed) a moment to settle; if a node never reports a size, arrange anyway.
+    const timer = setTimeout(
+      () => {
+        setAutoArrangePending(false);
+        handleAutoArrangeRef.current();
+      },
+      allMeasured ? 150 : 2000
+    );
+    return () => clearTimeout(timer);
+  }, [autoArrangePending, nodes]);
 
   // Smart defaults — dynamically auto-fill integration nodes using schemas + existing connections
   const smartDefaultsApplied = useRef(false);
@@ -494,15 +519,6 @@ const GraphFlowContent: React.FC = () => {
   // Canvas AI assistant
   const [conversationalTabActive, setConversationalTabActive] = useState(false);
   const [hasStartedConversation, setHasStartedConversation] = useState(false);
-  const assistant = useCanvasAssistant({
-    nodes,
-    edges,
-    setNodes,
-    setEdges,
-    updateNodeData,
-    workflowScopeId: agentId,
-  });
-
   // Restore functions to nodes after loading
   const restoreNodeFunctions = useCallback(
     (loadedNodes: Node[]): Node[] => {
@@ -519,6 +535,28 @@ const GraphFlowContent: React.FC = () => {
     },
     [updateNodeData]
   );
+
+  // The assistant reads the person's most recent test run itself, so a failing
+  // run never has to be copied out of the debug view and pasted into the chat.
+  const testHistoryRef = useRef(testHistory);
+  testHistoryRef.current = testHistory;
+  const getLastTestRun = useCallback(() => {
+    const latest = testHistoryRef.current[0];
+    if (!latest) return null;
+    return { inputs: latest.inputs, response: latest.response, error: latest.error };
+  }, []);
+
+  const assistant = useCanvasAssistant({
+    nodes,
+    edges,
+    setNodes,
+    setEdges,
+    hydrateNodes: restoreNodeFunctions,
+    onStructureChanged: requestAutoArrange,
+    getLastTestRun,
+    selectedNodeId: selectedNodes.length === 1 ? selectedNodes[0].id : null,
+    workflowScopeId: agentId,
+  });
 
   // Undo/Redo functionality
   const { undo, redo, canUndo, canRedo, takeSnapshot, resetHistory } =
@@ -1783,21 +1821,22 @@ const GraphFlowContent: React.FC = () => {
                 Kept mounted (hidden on the Executions tab) so BottomPanel's unsaved-changes
                 navigation guard and live execution mirroring stay active. */}
             <div
-              className={`fixed top-2 z-20 flex flex-row flex-wrap items-start justify-end gap-2 max-w-[calc(100vw-1rem)] transition-[right] duration-300 ${
-                activeTab !== "workflow" ? "hidden" : ""
-              } ${
-                (() => {
+              className={`fixed top-2 z-20 flex flex-row flex-wrap items-start justify-end gap-2 max-w-[calc(100vw-1rem)] ${
+                isResizingNodePanel ? "" : "transition-[right] duration-300"
+              } ${activeTab !== "workflow" ? "hidden" : ""}`}
+              style={{
+                right: (() => {
                   if (showNodePanel && showWorkflowPanel) {
-                    return "right-[calc(360px+20rem+1rem)]";
+                    return `calc(${nodePanelWidth}px + 20rem + 1rem)`;
                   } else if (showNodePanel) {
-                    return "right-[calc(360px+1rem)]";
+                    return `calc(${nodePanelWidth}px + 1rem)`;
                   } else if (showWorkflowPanel) {
-                    return "right-[calc(20rem+1rem)]";
+                    return "calc(20rem + 1rem)";
                   } else {
-                    return "right-2";
+                    return "0.5rem";
                   }
-                })()
-              }`}
+                })(),
+              }}
             >
               <BottomPanel
                 workflow={currentWorkflow}
@@ -1843,6 +1882,9 @@ const GraphFlowContent: React.FC = () => {
 
             <NodePanel
               isOpen={showNodePanel}
+              width={nodePanelWidth}
+              onWidthChange={setNodePanelWidth}
+              onResizingChange={setIsResizingNodePanel}
               onClose={toggleNodePanel}
               onAddNode={handlePanelAddNode}
               replaceMode={!!replaceTargetId}

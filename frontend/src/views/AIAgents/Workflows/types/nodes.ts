@@ -761,6 +761,12 @@ export interface MCPNodeData extends ToolBaseNodeData {
   whitelistedTools: string[]; // Array of tool names to expose
 }
 
+// Workflow Builder Tools node data: exposes the builder tool set to an agent.
+export interface WorkflowBuilderToolsNodeData extends BaseNodeData {
+  /** Tool names to expose; empty means all of them. */
+  enabledTools: string[];
+}
+
 export interface NodeHelpSection {
   title: string;
   body?: string;
@@ -869,6 +875,7 @@ export type NodeData =
   | TrainModelNodeData
   | ThreadRAGNodeData
   | MCPNodeData
+  | WorkflowBuilderToolsNodeData
   | WorkflowExecutorNodeData
   | HumanInTheLoopNodeData
   | SetStateNodeData

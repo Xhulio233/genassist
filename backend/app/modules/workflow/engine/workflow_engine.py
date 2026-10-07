@@ -44,6 +44,7 @@ from app.modules.workflow.engine.nodes import (
     KnowledgeToolNode,
     LLMModelNode,
     MCPNode,
+    WorkflowBuilderToolsNode,
     MLModelInferenceNode,
     NLPNode,
     OpenAPINode,
@@ -178,6 +179,7 @@ class WorkflowEngine:
         cls._node_registry["trainModelNode"] = TrainModelNode
         cls._node_registry["threadRAGNode"] = ThreadRAGNode
         cls._node_registry["mcpNode"] = MCPNode
+        cls._node_registry["workflowBuilderToolsNode"] = WorkflowBuilderToolsNode
         cls._node_registry["workflowExecutorNode"] = WorkflowExecutorNode
         cls._node_registry["humanInTheLoopNode"] = HumanInTheLoopNode
         cls._node_registry["setStateNode"] = SetStateNode
@@ -230,6 +232,7 @@ class WorkflowEngine:
             "nlpNode",
             "webSearchNode",
             "webhookTriggerNode",
+            "workflowBuilderToolsNode",
         }
 
         # Return True if node is NOT in the no-DB list (i.e., it needs DB)

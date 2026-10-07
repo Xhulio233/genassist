@@ -190,7 +190,10 @@ export const createWorkflowFromWizard = (payload: WorkflowWizardPayload) =>
 
 export interface WorkflowBuilderPayload {
   workflow_name: string;
-  workflow_json: string;
+  /** Simplified workflow specification. Either this or conversation_id is required. */
+  workflow_json?: string;
+  /** Create from the draft the builder agent finalized in this conversation. */
+  conversation_id?: string;
   workflow_description?: string;
 }
 

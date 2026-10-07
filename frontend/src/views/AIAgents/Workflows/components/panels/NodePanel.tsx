@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useCallback } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/tabs";
-import { HelpCircle, Search, Sparkles, Plus, Pencil, Trash2, X, ExternalLink } from "lucide-react";
+import { AlertTriangle, GripVertical, HelpCircle, Search, Sparkles, Plus, Pencil, Trash2, X, ExternalLink } from "lucide-react";
 import { RichInput } from "@/components/richInput";
 import nodeRegistry from "@/views/AIAgents/Workflows/registry/nodeRegistry";
 import { getNodeBgColor, getNodeIconColor } from "@/views/AIAgents/Workflows/utils/nodeColors";
@@ -8,8 +8,8 @@ import { renderIcon } from "@/views/AIAgents/Workflows/utils/iconUtils";
 import { useFeatureFlagVisible } from "@/components/featureFlag";
 import { FeatureFlags } from "@/config/featureFlags";
 import { useHiddenNodeTypes } from "../../hooks/useHiddenNodeTypes";
-import type { AssistantMessage } from "@/views/AIAgents/Workflows/utils/assistantActionParser";
-import { getActionLabel } from "@/views/AIAgents/Workflows/utils/assistantActionParser";
+import type { AssistantMessage } from "@/views/AIAgents/Workflows/utils/assistantDraft";
+import { changeKind, FIX_ISSUES_MESSAGE } from "@/views/AIAgents/Workflows/utils/assistantDraft";
 import FormattedText from "@/components/FormattedText";
 import { AssistantComposer } from "@/components/AssistantComposer";
 import { AssistantEmptyState } from "@/components/AssistantEmptyState";
@@ -46,8 +46,24 @@ import {
 import { getNodeDocsUrl } from "@/views/AIAgents/Workflows/utils/nodeDocsLinks";
 import { isNewNode } from "@/views/AIAgents/Workflows/utils/newNodes";
 
+export const NODE_PANEL_DEFAULT_WIDTH_PX = 360;
+const NODE_PANEL_MIN_WIDTH_PX = 320;
+
+function getMaxNodePanelWidthPx(): number {
+  if (typeof window === "undefined") return NODE_PANEL_DEFAULT_WIDTH_PX;
+  return Math.max(NODE_PANEL_MIN_WIDTH_PX, Math.round(window.innerWidth * 0.7));
+}
+function clampNodePanelWidth(w: number): number {
+  return Math.max(NODE_PANEL_MIN_WIDTH_PX, Math.min(getMaxNodePanelWidthPx(), Math.round(w)));
+}
+
 interface NodePanelProps {
   isOpen: boolean;
+  /** Current panel width in px (owned by the parent so it can offset the canvas controls). */
+  width?: number;
+  onWidthChange?: (width: number) => void;
+  /** Fires when a drag-resize starts/ends, so the parent can pause its own transitions. */
+  onResizingChange?: (resizing: boolean) => void;
   onClose: () => void;
   onAddNode: (nodeType: string) => void;
   /** When true, picking a node replaces an existing node instead of adding one. */
@@ -75,6 +91,9 @@ const NodePanel: React.FC<NodePanelProps> = ({
   isOpen,
   onClose,
   onAddNode,
+  width = NODE_PANEL_DEFAULT_WIDTH_PX,
+  onWidthChange,
+  onResizingChange,
   replaceMode = false,
   replaceNodeName,
   onCancelReplace,
@@ -92,6 +111,39 @@ const NodePanel: React.FC<NodePanelProps> = ({
   const [selectedHelp, setSelectedHelp] = useState<HelpDialogState | null>(null);
   const [inputMessage, setInputMessage] = useState<string>("");
   const conversationScrollRef = useRef<HTMLDivElement>(null);
+
+  // Drag-resize from the left edge. Pointer capture keeps the drag alive over the canvas.
+  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeStartRef.current = { x: e.clientX, width };
+    onResizingChange?.(true);
+  };
+  const handleResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const start = resizeStartRef.current;
+    if (!start) return;
+    onWidthChange?.(clampNodePanelWidth(start.width + (start.x - e.clientX)));
+  };
+  const handleResizeEnd = () => {
+    if (!resizeStartRef.current) return;
+    resizeStartRef.current = null;
+    onResizingChange?.(false);
+  };
+
+  // When the viewport shrinks, clamp the width so the resize handle stays on screen.
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const handleWindowResize = () => {
+      const max = getMaxNodePanelWidthPx();
+      if (width > max) onWidthChange?.(max);
+    };
+    window.addEventListener("resize", handleWindowResize);
+    handleWindowResize();
+    return () => window.removeEventListener("resize", handleWindowResize);
+  }, [isOpen, width, onWidthChange]);
 
   // Auto-scroll conversation to bottom
   React.useEffect(() => {
@@ -415,12 +467,30 @@ const NodePanel: React.FC<NodePanelProps> = ({
       ></div>
 
       <div
-        className={`fixed top-2 right-2 h-[calc(100vh-1rem)] w-[360px] bg-background shadow-lg rounded-xl transition-transform duration-300 border ${
+        className={`fixed top-2 right-2 h-[calc(100vh-1rem)] bg-background shadow-lg rounded-xl transition-transform duration-300 border ${
           selectedHelp ? "z-40" : "z-[1001]"
         } ${
           isOpen ? "translate-x-0" : "translate-x-[calc(100%+0.5rem)]"
         }`}
+        style={{ width }}
       >
+        {onWidthChange && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize panel"
+            className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize touch-none z-20 flex items-center justify-center group hover:bg-primary/10 rounded-l-xl transition-colors"
+            onPointerDown={handleResizeStart}
+            onPointerMove={handleResizeMove}
+            onPointerUp={handleResizeEnd}
+            onPointerCancel={handleResizeEnd}
+            onDoubleClick={() => onWidthChange(NODE_PANEL_DEFAULT_WIDTH_PX)}
+          >
+            <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              <GripVertical className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </div>
+        )}
         <div className="flex flex-col h-full">
           {/* Replace-mode banner */}
           {replaceMode && (
@@ -540,29 +610,59 @@ const NodePanel: React.FC<NodePanelProps> = ({
                                 <div className="text-sm text-foreground leading-relaxed">
                                   <FormattedText text={msg.text} />
                                 </div>
-                                {msg.actions && msg.actions.length > 0 && (
+                                {msg.changes && msg.changes.length > 0 && (
                                   <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {msg.actions.map((action) => {
-                                      const isAdd = action.type === "add_node";
-                                      const isUpdate = action.type === "update_node";
-                                      const Icon = isAdd ? Plus : isUpdate ? Pencil : Trash2;
-                                      const colorClass = isAdd
-                                        ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30"
-                                        : isUpdate
-                                        ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/30"
-                                        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30";
-                                      const actionKey = `${action.type}-${getActionLabel(action)}`;
+                                    {msg.changes.map((change, index) => {
+                                      const kind = changeKind(change);
+                                      const Icon = kind === "add" ? Plus : kind === "update" ? Pencil : Trash2;
+                                      const colorClass =
+                                        kind === "add"
+                                          ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30"
+                                          : kind === "update"
+                                          ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/30"
+                                          : "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30";
                                       return (
                                         <span
-                                          key={actionKey}
+                                          key={`${change.op}-${index}`}
                                           className={`inline-flex items-center gap-1 text-xs border rounded-full px-2.5 py-1 ${colorClass}`}
                                         >
                                           <Icon className="h-3 w-3" />
-                                          {getActionLabel(action)}
+                                          {change.summary}
                                         </span>
                                       );
                                     })}
                                   </div>
+                                )}
+                                {msg.issues && msg.issues.length > 0 && (
+                                  <ul className="mt-2 space-y-1">
+                                    {msg.issues.map((issue, index) => (
+                                      <li
+                                        key={`${issue.code}-${index}`}
+                                        className={`flex items-start gap-1.5 text-xs rounded-md border px-2.5 py-1.5 ${
+                                          issue.severity === "error"
+                                            ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30"
+                                            : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30"
+                                        }`}
+                                      >
+                                        <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                        <span>{issue.message}</span>
+                                      </li>
+                                    ))}
+                                    {msg.issues.some((issue) => issue.severity === "error") &&
+                                      msg.id === messages[messages.length - 1]?.id &&
+                                      !isThinking && (
+                                        <li>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-7 text-xs"
+                                            onClick={() => handleSend(FIX_ISSUES_MESSAGE)}
+                                          >
+                                            Fix these
+                                          </Button>
+                                        </li>
+                                      )}
+                                  </ul>
                                 )}
                               </div>
                             </div>

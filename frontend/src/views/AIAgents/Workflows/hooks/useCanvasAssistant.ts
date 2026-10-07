@@ -3,37 +3,56 @@ import { type ChatMessage } from "genassist-chat-react";
 import { Node, Edge } from "reactflow";
 import { v4 as uuidv4 } from "uuid";
 import { useChatService } from "@/hooks/useChatService";
-import nodeRegistry from "../registry/nodeRegistry";
-import { edgesOnRemovedHandles } from "../utils/handleEdges";
-import { flattenGroups } from "../utils/nodeGroups";
 import {
-  serializeCanvasContext,
-  parseAgentActions,
-  createNodeFromAction,
+  getBuilderDraft,
+  putBuilderDraft,
+  type BuilderCanvasSnapshot,
+} from "@/services/workflowBuilder";
+import {
+  changesAffectLayout,
+  mergeDraftNodes,
+  reportableIssues,
+  serializeCanvasForDraft,
   type AssistantMessage,
-  type ParsedAction,
-  type AddNodeAction,
-  type UpdateNodeAction,
-  type RemoveNodeAction,
-  type RemoveEdgeAction,
-} from "../utils/assistantActionParser";
+} from "../utils/assistantDraft";
 
 interface UseCanvasAssistantArgs {
   nodes: Node[];
   edges: Edge[];
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
-  updateNodeData: (nodeId: string, data: Record<string, unknown>) => void;
+  /** Rebuilds what plain JSON nodes lack (registry handles, data callbacks). */
+  hydrateNodes: (nodes: Node[]) => Node[];
+  /**
+   * Called after a turn in which the assistant added or removed nodes or
+   * connections, so the canvas can auto-arrange once the new nodes are rendered.
+   */
+  onStructureChanged?: () => void;
+  /** The person's latest test run on the canvas, shared with the assistant on each message. */
+  getLastTestRun?: () => BuilderCanvasSnapshot["last_test_run"];
+  /** The node the user has selected, so "this node" means something to the assistant. */
+  selectedNodeId?: string | null;
   /** When this changes the conversation resets so context from a previous workflow doesn't leak. */
   workflowScopeId?: string;
 }
 
+/**
+ * Chat with the Workflow Builder agent about the workflow on the canvas.
+ *
+ * Each message is a round trip through a server-side draft: the canvas is
+ * uploaded as the draft, the agent edits it with its tools (every edit is
+ * validated on the server), and the result is read back and applied here.
+ * Nothing is parsed out of the agent's reply text.
+ */
 export function useCanvasAssistant({
   nodes,
   edges,
   setNodes,
   setEdges,
-  updateNodeData,
+  hydrateNodes,
+  onStructureChanged,
+  getLastTestRun,
+  selectedNodeId,
   workflowScopeId,
 }: UseCanvasAssistantArgs) {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
@@ -41,132 +60,54 @@ export function useCanvasAssistant({
   const suppressWelcomeRef = useRef(false);
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
-  const executedActionsRef = useRef<Set<string>>(new Set());
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  // Draft revision already reflected on the canvas; a higher one means the agent changed something.
+  const appliedRevisionRef = useRef(0);
 
   // Keep refs in sync so callbacks always see current canvas state
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  selectedNodeIdRef.current = selectedNodeId;
+  const getLastTestRunRef = useRef(getLastTestRun);
+  getLastTestRunRef.current = getLastTestRun;
 
-  // Restore node functions after adding to canvas
-  const restoreNode = useCallback(
-    (node: Node): Node => ({
-      ...node,
-      data: { ...node.data, updateNodeData },
-    }),
-    [updateNodeData],
+  // Mirror of `messages` that is current the moment it is written, so a reply
+  // can be tied to its message id without waiting for a render.
+  const messagesRef = useRef<AssistantMessage[]>([]);
+  const updateMessages = useCallback(
+    (update: (prev: AssistantMessage[]) => AssistantMessage[]) => {
+      messagesRef.current = update(messagesRef.current);
+      setMessages(messagesRef.current);
+    },
+    []
   );
 
-  // Build a dedup key for any action
-  const actionKey = (action: ParsedAction): string => {
-    switch (action.type) {
-      case "add_node":
-        return `add-${action.nodeType}-${action.label}-${action.connectTo}-${action.thenConnectTo}-${action.asToolFor}-${action.asSubAgentFor}`;
-      case "update_node":
-        return `update-${action.nodeId}-${JSON.stringify(action.updates)}`;
-      case "remove_node":
-        return `remove-${action.nodeId}`;
-      case "remove_edge":
-        return `remove-edge-${action.fromNodeId}-${action.toNodeId}`;
-    }
-  };
+  // Read the draft after the agent's turn and bring the canvas in line with it.
+  const applyDraft = useCallback(
+    async (conversationId: string, messageId: string) => {
+      const draft = await getBuilderDraft(conversationId);
+      if (!draft || draft.revision <= appliedRevisionRef.current) return;
+      appliedRevisionRef.current = draft.revision;
 
-  // Execute parsed actions on the canvas
-  const executeActions = useCallback(
-    (actions: ParsedAction[]) => {
-      let batchNodes: Node[] = [...nodesRef.current];
-      let batchEdges: Edge[] = [...edgesRef.current];
+      const draftEdges = draft.edges as unknown as Edge[];
+      const merged = hydrateNodes(
+        mergeDraftNodes(nodesRef.current, draft.nodes as unknown as Node[])
+      );
+      nodesRef.current = merged;
+      edgesRef.current = draftEdges;
+      setNodes(merged);
+      setEdges(draftEdges);
+      if (changesAffectLayout(draft.changes)) onStructureChanged?.();
 
-      for (const action of actions) {
-        const key = actionKey(action);
-        if (executedActionsRef.current.has(key)) continue;
-        executedActionsRef.current.add(key);
-
-        if (action.type === "add_node") {
-          // New nodes are placed at the canvas root, so position them against root-level
-          // coordinates (grouped nodes store group-relative positions).
-          const { nodes: newNodes, edges: newEdges } = createNodeFromAction(
-            action as AddNodeAction,
-            flattenGroups(batchNodes),
-            batchEdges,
-          );
-          if (newNodes.length > 0) {
-            const restored = newNodes.map(restoreNode);
-            batchNodes = [...batchNodes, ...restored];
-            setNodes((nds) => {
-              const updated = [...nds, ...restored];
-              nodesRef.current = updated;
-              return updated;
-            });
-          }
-          if (newEdges.length > 0) {
-            batchEdges = [...batchEdges, ...newEdges];
-            setEdges((eds) => {
-              const updated = [...eds, ...newEdges];
-              edgesRef.current = updated;
-              return updated;
-            });
-          }
-        } else if (action.type === "update_node") {
-          const { nodeId, updates } = action as UpdateNodeAction;
-          // Go through the registry so config-derived handles (a Switch's case
-          // outputs) are rebuilt, then drop edges left on handles the update
-          // removed — the same cleanup the node's own dialog performs.
-          const before = batchNodes.find((n) => n.id === nodeId);
-          const after = before ? nodeRegistry.withDataUpdate(before, updates) : undefined;
-          if (before && after) {
-            batchNodes = batchNodes.map((n) => (n.id === nodeId ? after : n));
-          }
-          setNodes((nds) => {
-            const updated = nds.map((n) =>
-              n.id === nodeId ? nodeRegistry.withDataUpdate(n, updates) : n,
-            );
-            nodesRef.current = updated;
-            return updated;
-          });
-          const staleEdgeIds = new Set(
-            edgesOnRemovedHandles(
-              batchEdges,
-              nodeId,
-              before?.data?.handlers,
-              after?.data?.handlers,
-            ).map((e) => e.id),
-          );
-          if (staleEdgeIds.size > 0) {
-            batchEdges = batchEdges.filter((e) => !staleEdgeIds.has(e.id));
-            setEdges((eds) => {
-              const updated = eds.filter((e) => !staleEdgeIds.has(e.id));
-              edgesRef.current = updated;
-              return updated;
-            });
-          }
-        } else if (action.type === "remove_node") {
-          const { nodeId } = action as RemoveNodeAction;
-          setNodes((nds) => {
-            const updated = nds.filter((n) => n.id !== nodeId);
-            nodesRef.current = updated;
-            return updated;
-          });
-          // Also remove edges connected to the removed node
-          setEdges((eds) => {
-            const updated = eds.filter(
-              (e) => e.source !== nodeId && e.target !== nodeId,
-            );
-            edgesRef.current = updated;
-            return updated;
-          });
-        } else if (action.type === "remove_edge") {
-          const { fromNodeId, toNodeId } = action as RemoveEdgeAction;
-          setEdges((eds) => {
-            const updated = eds.filter(
-              (e) => !(e.source === fromNodeId && e.target === toNodeId),
-            );
-            edgesRef.current = updated;
-            return updated;
-          });
-        }
-      }
+      updateMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, changes: draft.changes, issues: reportableIssues(draft) }
+            : msg
+        )
+      );
     },
-    [restoreNode, setNodes, setEdges],
+    [hydrateNodes, onStructureChanged, setNodes, setEdges, updateMessages]
   );
 
   // ── Message handler ──
@@ -179,38 +120,49 @@ export function useCanvasAssistant({
         }
 
         setIsThinking(false);
-        const { cleanText, actions } = parseAgentActions(message.text);
 
         // Update or add the latest agent message
-        setMessages((prev) => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg?.speaker === "agent") {
-            return [
-              ...prev.slice(0, -1),
-              { ...lastMsg, text: cleanText, actions },
-            ];
-          }
-          return [
-            ...prev,
-            { id: uuidv4(), speaker: "agent", text: cleanText, actions },
-          ];
-        });
+        const last = messagesRef.current[messagesRef.current.length - 1];
+        const messageId = last?.speaker === "agent" ? last.id : uuidv4();
+        updateMessages((prev) =>
+          last?.speaker === "agent"
+            ? [...prev.slice(0, -1), { ...last, text: message.text }]
+            : [...prev, { id: messageId, speaker: "agent", text: message.text }]
+        );
 
-        if (actions.length > 0) {
-          executeActions(actions);
+        const conversationId = chatRef.current?.getConversationId?.();
+        if (conversationId) {
+          applyDraft(conversationId, messageId).catch(() => {
+            updateMessages((prev) => [
+              ...prev,
+              {
+                id: uuidv4(),
+                speaker: "agent",
+                text: "I couldn't load the updated workflow, so the canvas was not changed.",
+              },
+            ]);
+          });
         }
       } else if (message.speaker === "special") {
         setIsThinking(false);
-        setMessages((prev) => [
+        updateMessages((prev) => [
           ...prev,
           { id: uuidv4(), speaker: "agent", text: message.text },
         ]);
       }
     },
-    [executeActions],
+    // chatRef is a stable ref from useChatService
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [applyDraft, updateMessages]
   );
 
-  const { sendMessage: chatSend, resetConversation, hasConfig, chatRef } = useChatService({
+  const {
+    sendMessage: chatSend,
+    resetConversation,
+    hasConfig,
+    chatRef,
+    startConversationIfNeeded,
+  } = useChatService({
     onMessage: handleMessage,
     scopeId: workflowScopeId,
   });
@@ -219,30 +171,22 @@ export function useCanvasAssistant({
   const prevScopeRef = useRef(workflowScopeId);
   useEffect(() => {
     if (prevScopeRef.current !== undefined && workflowScopeId !== prevScopeRef.current) {
-      setMessages([]);
-      executedActionsRef.current.clear();
+      updateMessages(() => []);
+      appliedRevisionRef.current = 0;
     }
     prevScopeRef.current = workflowScopeId;
-  }, [workflowScopeId]);
+  }, [workflowScopeId, updateMessages]);
 
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
-      setMessages((prev) => [
+      updateMessages((prev) => [
         ...prev,
         { id: uuidv4(), speaker: "customer", text: trimmed },
       ]);
       setIsThinking(true);
-      executedActionsRef.current.clear();
-
-      // Build context prefix
-      const context = serializeCanvasContext(
-        nodesRef.current,
-        edgesRef.current,
-      );
-      const fullMessage = `${context}\n\n${trimmed}`;
 
       try {
         // Only suppress the welcome message when we're actually starting a new conversation;
@@ -250,24 +194,49 @@ export function useCanvasAssistant({
         if (!chatRef.current?.getConversationId?.()) {
           suppressWelcomeRef.current = true;
         }
-        await chatSend(fullMessage);
+        await startConversationIfNeeded();
+        const conversationId = chatRef.current?.getConversationId?.();
+        if (!conversationId) {
+          throw new Error("Could not start a conversation with the assistant.");
+        }
+
+        // The agent edits a draft of the canvas exactly as it is now, unsaved changes included.
+        const uploaded = await putBuilderDraft(
+          conversationId,
+          serializeCanvasForDraft(
+            nodesRef.current,
+            edgesRef.current,
+            selectedNodeIdRef.current,
+            getLastTestRunRef.current?.()
+          )
+        );
+        if (!uploaded) {
+          throw new Error("Could not share the workflow with the assistant.");
+        }
+        appliedRevisionRef.current = uploaded.revision;
+
+        await chatSend(trimmed);
       } catch (err) {
+        suppressWelcomeRef.current = false;
         setIsThinking(false);
         const errMsg =
           err instanceof Error ? err.message : "Failed to send message.";
-        setMessages((prev) => [
+        updateMessages((prev) => [
           ...prev,
           { id: uuidv4(), speaker: "agent", text: errMsg },
         ]);
       }
     },
-    [chatSend],
+    // chatRef is a stable ref from useChatService
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatSend, startConversationIfNeeded, updateMessages]
   );
 
   const clearHistory = useCallback(() => {
-    setMessages([]);
+    updateMessages(() => []);
+    appliedRevisionRef.current = 0;
     resetConversation();
-  }, [resetConversation]);
+  }, [resetConversation, updateMessages]);
 
   return {
     messages,

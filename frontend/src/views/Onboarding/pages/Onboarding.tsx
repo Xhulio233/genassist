@@ -127,6 +127,17 @@ export default function Onboarding() {
     navigate("/login", { state: { from: { pathname: "/onboarding" } } });
   };
 
+  // Drop the saved draft and go back to the chat, so an abandoned draft never traps the user here.
+  const handleStartOver = () => {
+    try {
+      localStorage.removeItem(WORKFLOW_DRAFT_STORAGE_KEY);
+      localStorage.removeItem(AGENT_NAME_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    window.location.reload();
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-muted">
       <OnboardingHeader />
@@ -154,13 +165,22 @@ export default function Onboarding() {
             />
           </div>
         ) : (
-          <OnboardingNameAgent
-            value={agentName}
-            disabled={isSending}
-            onChange={handleAgentNameChange}
-            onContinue={handleContinue}
-            workflowDraft={workflowDraft}
-          />
+          <div className="w-full flex flex-col items-center gap-4">
+            <OnboardingNameAgent
+              value={agentName}
+              disabled={isSending}
+              onChange={handleAgentNameChange}
+              onContinue={handleContinue}
+              workflowDraft={workflowDraft}
+            />
+            <button
+              type="button"
+              onClick={handleStartOver}
+              className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+            >
+              Start over
+            </button>
+          </div>
         )}
 
         <ErrorBanner message={error} />

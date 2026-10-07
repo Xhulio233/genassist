@@ -22,6 +22,7 @@ from .jira_node import JiraNode
 from .knowledge_tool_node import KnowledgeToolNode
 from .llm_model_node import LLMModelNode
 from .mcp_node import MCPNode
+from .workflow_builder_tools_node import WorkflowBuilderToolsNode
 from .ml import (
     MLModelInferenceNode,
     TrainDataSourceNode,
@@ -86,6 +87,7 @@ __all__ = [
     "TrainModelNode",
     "ThreadRAGNode",
     "MCPNode",
+    "WorkflowBuilderToolsNode",
     "WorkflowExecutorNode",
     "HumanInTheLoopNode",
     "SetStateNode",

@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentWelcomeData, type ChatMessage } from "genassist-chat-react";
 import { type RegistrationStatus } from "@/context/RoutesContext";
 import { useChatService } from "@/hooks/useChatService";
+import { getBuilderDraftStatus } from "@/services/workflowBuilder";
 import {
   extractWorkflowDraftFromText,
   hasWorkflowReadySignal,
   stripWorkflowTags,
   type WorkflowDraft,
 } from "@/views/Onboarding/utils/extractWorkflowDraft";
+
+const RESPONSE_TIMEOUT_MS = 180_000;
 
 export interface OnboardingMessage {
   role: "user" | "agent";
@@ -34,6 +37,31 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
   const hasUserAskedRef = useRef(false);
   const hasUserStartedChatRef = useRef(false);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const getConversationIdRef = useRef<() => string | null>(() => null);
+
+  // The builder agent keeps the workflow in a server-side draft; ask the server
+  // whether it is ready instead of looking for it in the reply text.
+  const refreshDraftFromServer = useCallback(async () => {
+    const conversationId = getConversationIdRef.current();
+    const baseUrl = (import.meta.env.VITE_ONBOARDING_API_URL as string) || "";
+    const apiKey = (import.meta.env.VITE_ONBOARDING_CHAT_APIKEY as string) || "";
+    if (!conversationId || !baseUrl || !apiKey) return;
+    try {
+      const status = await getBuilderDraftStatus(conversationId, {
+        baseUrl,
+        apiKey,
+        tenant: localStorage.getItem("tenant_id") || undefined,
+      });
+      if (!status?.spec?.workflow?.length) return;
+      // conversation_id lets the post-login step create the workflow from the stored draft.
+      const draft: WorkflowDraft = { ...status.spec, conversation_id: conversationId };
+      workflowDraftRef.current = draft;
+      setWorkflowDraft(draft);
+      if (status.ready) setIsWorkflowReady(true);
+    } catch {
+      // The chat keeps working without the preview; the next reply retries.
+    }
+  }, []);
 
   // ── Message handler ──
   const handleMessage = useCallback((message: ChatMessage) => {
@@ -48,7 +76,9 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     if (message.speaker === "agent") {
       const rawText = message.text;
 
-      // Extract progressive workflow draft if present
+      void refreshDraftFromServer();
+
+      // Fallback for a builder agent that still writes the workflow into its reply.
       const extracted = extractWorkflowDraftFromText(rawText);
       if (extracted) {
         workflowDraftRef.current = extracted.parsed;
@@ -64,7 +94,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
       setAgentReply(displayText);
       setMessages((prev) => [...prev, { role: "agent", text: displayText }]);
     }
-  }, []);
+  }, [refreshDraftFromServer]);
 
   // ── Welcome data handler ──
   const handleWelcomeData = useCallback((data: AgentWelcomeData) => {
@@ -86,6 +116,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     onMessage: handleMessage,
     onWelcomeData: handleWelcomeData,
   });
+  getConversationIdRef.current = () => chatRef.current?.getConversationId?.() ?? null;
 
   // Helper: read thinking config from the ChatService and update state
   const applyThinkingConfig = useCallback(() => {
@@ -135,7 +166,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
       if (!trimmed) return;
 
       if (!hasConfig) {
-        setError("Add VITE_GENASSIST_CHAT_APIKEY and API URL to use onboarding chat.");
+        setError("Add VITE_ONBOARDING_CHAT_APIKEY and VITE_ONBOARDING_API_URL to use onboarding chat.");
         return;
       }
 
@@ -156,12 +187,12 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
       setIsThinking(true);
       setThinkingIndex(0);
 
-      // Safety timeout — clear thinking state if no response within 60s
+      // Safety timeout — building a workflow takes many steps, so allow a few minutes
       thinkingTimeoutRef.current = setTimeout(() => {
         setIsThinking(false);
         setError("Response timed out. Please try again.");
         thinkingTimeoutRef.current = null;
-      }, 60_000);
+      }, RESPONSE_TIMEOUT_MS);
 
       try {
         await chatSend(trimmed);
