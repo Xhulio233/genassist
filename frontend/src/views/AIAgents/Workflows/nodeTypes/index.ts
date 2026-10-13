@@ -90,11 +90,13 @@ import {
   AGGREGATOR_NODE_DEFINITION,
   SWITCH_NODE_DEFINITION,
   FILTER_NODE_DEFINITION,
+  LOOP_NODE_DEFINITION,
 } from "./router/definitions";
 import RouterNode from "./router/routerNode";
 import AggregatorNode from "./router/aggregatorNode";
 import SwitchNode from "./router/switchNode";
 import FilterNode from "./router/filterNode";
+import LoopNode from "./router/loopNode";
 import CalendarEventNode from "./integrations/calendarEventNode";
 import {
   TRAIN_DATA_SOURCE_NODE_DEFINITION,
@@ -165,6 +167,7 @@ export const registerAllNodeTypes = () => {
   nodeRegistry.registerNodeType(ROUTER_NODE_DEFINITION);
   nodeRegistry.registerNodeType(SWITCH_NODE_DEFINITION);
   nodeRegistry.registerNodeType(FILTER_NODE_DEFINITION);
+  nodeRegistry.registerNodeType(LOOP_NODE_DEFINITION);
 
   nodeRegistry.registerNodeType(AGGREGATOR_NODE_DEFINITION);
 
@@ -226,6 +229,7 @@ export const getNodeTypes = () => {
     routerNode: RouterNode,
     switchNode: SwitchNode,
     filterNode: FilterNode,
+    loopNode: LoopNode,
     aggregatorNode: AggregatorNode,
     nlpNode: NlpNode,
     dataMapperNode: DataMapperNode,

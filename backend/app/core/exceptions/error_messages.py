@@ -13,6 +13,8 @@ class ErrorKey(Enum):
     TOOL_USAGE_CONFIG_INVALID = "tool_usage_config_invalid"
     RULE_CONFIG_INVALID = "rule_config_invalid"
     EVALUATION_TARGET_NOT_A_VERSION = "evaluation_target_not_a_version"
+    EVALUATION_WORKFLOW_REQUIRED = "evaluation_workflow_required"
+    EVALUATION_TECHNIQUES_REQUIRED = "evaluation_techniques_required"
     EVALUATION_BUNDLE_INVALID = "evaluation_bundle_invalid"
     DATASET_FILE_IMPORT_INVALID = "dataset_file_import_invalid"
     NOT_FOUND = "not_found"
@@ -98,6 +100,7 @@ class ErrorKey(Enum):
     SUB_AGENT_SESSION_STALE = "SUB_AGENT_SESSION_STALE"
     SUB_AGENT_INVALID_TOPOLOGY = "SUB_AGENT_INVALID_TOPOLOGY"
     SUB_AGENT_INVALID_CONFIG = "SUB_AGENT_INVALID_CONFIG"
+    LOOP_INVALID_TOPOLOGY = "LOOP_INVALID_TOPOLOGY"
     OPERATOR_ROLE_MISSING = "OPERATOR_ROLE_MISSING"
     CREATE_USER_TYPE_IN_MENU = "CREATE_USER_TYPE_IN_MENU"
     LOGIN_ERROR_CONSOLE_USER = "LOGIN_ERROR_CONSOLE_USER"
@@ -123,6 +126,10 @@ class ErrorKey(Enum):
     ERROR_CONNECTING_WHISPER_SERVICE = "ERROR_CONNECTING_WHISPER_SERVICE"
     ERROR_INSIDE_WHISPER_SERVICE = "ERROR_INSIDE_WHISPER_SERVICE"
     MESSAGE_NOT_FOUND = "MESSAGE_NOT_FOUND"
+    ISSUE_STATUS_NOT_FOUND = "ISSUE_STATUS_NOT_FOUND"
+    ISSUE_STATUS_KEY_TAKEN = "ISSUE_STATUS_KEY_TAKEN"
+    ISSUE_STATUS_PROTECTED = "ISSUE_STATUS_PROTECTED"
+    ISSUE_STATUS_ORDER_INVALID = "ISSUE_STATUS_ORDER_INVALID"
     ERROR_EXTRACTING_FROM_FILE = "ERROR_EXTRACTING_FROM_FILE"
     ML_EXTRACT_CONFIGURATION_INVALID = "ML_EXTRACT_CONFIGURATION_INVALID"
     ML_EXTRACT_QUERY_FAILED = "ML_EXTRACT_QUERY_FAILED"
@@ -209,6 +216,8 @@ ERROR_MESSAGES = {
         ErrorKey.TOOL_USAGE_CONFIG_INVALID: "The tool usage configuration could not be resolved to canonical tool ids.",
         ErrorKey.RULE_CONFIG_INVALID: "The evaluation rule configuration is not valid.",
         ErrorKey.EVALUATION_TARGET_NOT_A_VERSION: "The target workflow is not a version of the evaluation's workflow.",
+        ErrorKey.EVALUATION_WORKFLOW_REQUIRED: "This evaluation has no workflow. Edit it and choose a workflow.",
+        ErrorKey.EVALUATION_TECHNIQUES_REQUIRED: "Add at least one check or method to the evaluation.",
         ErrorKey.EVALUATION_BUNDLE_INVALID: "The evaluation bundle is invalid or could not be imported.",
         ErrorKey.DATASET_FILE_IMPORT_INVALID: "The dataset files could not be imported.",
         ErrorKey.NOT_FOUND: "The requested resource was not found.",
@@ -318,6 +327,10 @@ ERROR_MESSAGES = {
         ErrorKey.ERROR_CONNECTING_WHISPER_SERVICE: "Error connecting to transcription service.",
         ErrorKey.ERROR_INSIDE_WHISPER_SERVICE: "An error occurred in transcription service.",
         ErrorKey.MESSAGE_NOT_FOUND: "Message not found.",
+        ErrorKey.ISSUE_STATUS_NOT_FOUND: "Issue status not found or no longer active.",
+        ErrorKey.ISSUE_STATUS_KEY_TAKEN: "An issue status with this key already exists.",
+        ErrorKey.ISSUE_STATUS_PROTECTED: "The default issue status cannot be non-active or moved out of To Do.",
+        ErrorKey.ISSUE_STATUS_ORDER_INVALID: "The order must list every active issue status exactly once.",
         ErrorKey.ERROR_EXTRACTING_FROM_FILE: "Failed to extract text from file.",
         ErrorKey.ML_EXTRACT_CONFIGURATION_INVALID: "Train Data Source configuration is incomplete.",
         ErrorKey.ML_EXTRACT_QUERY_FAILED: "Could not run the Train Data Source query.",
@@ -398,6 +411,7 @@ ERROR_MESSAGES = {
         ErrorKey.SUB_AGENT_SESSION_STALE: "The workflow changed while a sub-agent conversation was in progress. Please start a new message.",
         ErrorKey.SUB_AGENT_INVALID_TOPOLOGY: "The sub-agent connections in this workflow are invalid: {0}",
         ErrorKey.SUB_AGENT_INVALID_CONFIG: "A sub-agent in this workflow is misconfigured: {0}",
+        ErrorKey.LOOP_INVALID_TOPOLOGY: "A loop in this workflow is not connected correctly: {0}",
         ErrorKey.PROMPT_CONTEXT_INVALID: "The prompt context is not valid for this workflow.",
         ErrorKey.PROMPT_FIELD_NOT_SUPPORTED: "This node has no editable prompt field with that name.",
         ErrorKey.PROMPT_VERSION_CONFLICT: "Another save completed first. Try again.",
@@ -437,6 +451,7 @@ ERROR_MESSAGES = {
         ErrorKey.SUB_AGENT_SESSION_STALE: "Le workflow a changé pendant une conversation avec un sous-agent. Veuillez démarrer un nouveau message.",
         ErrorKey.SUB_AGENT_INVALID_TOPOLOGY: "Les connexions de sous-agents de ce workflow sont invalides : {0}",
         ErrorKey.SUB_AGENT_INVALID_CONFIG: "Un sous-agent de ce workflow est mal configuré : {0}",
+        ErrorKey.LOOP_INVALID_TOPOLOGY: "Une boucle de ce workflow n'est pas connectée correctement : {0}",
         ErrorKey.CHAT_TURN_CAPACITY_EXCEEDED: "L'assistant est occupé pour le moment. Veuillez réessayer dans un instant.",
         ErrorKey.CHAT_TURN_CLIENT_DISCONNECTED: "La demande a été abandonnée avant que l'assistant puisse répondre.",
     },
