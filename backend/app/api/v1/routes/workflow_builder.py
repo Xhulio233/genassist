@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.dependencies import auth, permissions
 from app.core.permissions.constants import Permissions as P
+from app.modules.workflow.builder import assist
 from app.modules.workflow.builder.build import (
     EMPTY_EXECUTION_STATE,
     SpecValidationError,
@@ -30,6 +31,7 @@ from app.modules.workflow.builder.build import (
 )
 from app.modules.workflow.builder.draft import (
     STATUS_READY,
+    DraftError,
     WorkflowDraft,
     load_draft,
     save_draft,
@@ -44,12 +46,30 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+class AssistRequest(BaseModel):
+    snapshot: "CanvasSnapshot"
+    action: str
+    node_ids: List[str] = Field(default_factory=list)
+    instruction: str = ""
+
+
+class ApplyRequest(BaseModel):
+    snapshot: "CanvasSnapshot"
+    operations: List[Dict[str, Any]]
+
+
 class CanvasSnapshot(BaseModel):
     nodes: List[Dict[str, Any]] = Field(default_factory=list)
     edges: List[Dict[str, Any]] = Field(default_factory=list)
     selected_node_id: Optional[str] = None
+    # Whether the builder's test runs bypass steps that send or create things.
+    simulate_actions: bool = True
     # The person's latest test run on the canvas: {"inputs": {...}, "response": {...}, "error": ...}
     last_test_run: Optional[Dict[str, Any]] = None
+
+
+AssistRequest.model_rebuild()
+ApplyRequest.model_rebuild()
 
 
 async def _tenant_defaults(llm_provider_service: LlmProviderService) -> Dict[str, Any]:
@@ -99,6 +119,7 @@ async def put_draft(
         previous=previous,
         last_test_run=snapshot.last_test_run,
     )
+    draft.simulate_actions = snapshot.simulate_actions
     await save_draft(str(conversation_id), draft)
     return {"revision": draft.revision, "node_count": len(draft.aliases)}
 
@@ -150,6 +171,50 @@ async def validate(snapshot: CanvasSnapshot):
         "valid": not blocking(issues),
         "issues": [issue.to_dict() for issue in issues],
     }
+
+
+# ── Focused AI actions on the canvas ──────────────────────────────────────
+
+
+def _draft_from_snapshot(snapshot: CanvasSnapshot) -> WorkflowDraft:
+    return WorkflowDraft.from_canvas(
+        snapshot.nodes, snapshot.edges,
+        selected_node_id=snapshot.selected_node_id, last_test_run=snapshot.last_test_run,
+    )
+
+
+@router.post(
+    "/assist",
+    dependencies=[Depends(auth), Depends(permissions(P.Workflow.READ))],
+)
+async def assist_action(body: AssistRequest):
+    """
+    One focused action on the canvas as it is: explain a step or a group, describe
+    the workflow, explain a step in the last test run, suggest test messages,
+    review, or propose a change (improved prompt, generated code, optimisations).
+    Proposals are returned, not applied; the canvas applies them with /assist/apply.
+    """
+    draft = _draft_from_snapshot(body.snapshot)
+    try:
+        return await assist.run_action(draft, body.action, body.node_ids, body.instruction)
+    except (ValueError, DraftError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post(
+    "/assist/apply",
+    dependencies=[Depends(auth), Depends(permissions(P.Workflow.UPDATE))],
+)
+async def assist_apply(body: ApplyRequest):
+    """Apply approved operations to the canvas as sent, without a model call; returns the result."""
+    from app.modules.workflow.builder.tools import apply_plan
+
+    draft = _draft_from_snapshot(body.snapshot)
+    try:
+        report = apply_plan(draft, body.operations)
+    except DraftError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return {**draft.client_payload(), "report": report}
 
 
 # ── Creation ──────────────────────────────────────────────────────────────

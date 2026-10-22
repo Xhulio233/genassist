@@ -51,7 +51,7 @@ FILTER_OPERATORS_WITHOUT_VALUE = {"is_empty", "is_not_empty"}
 
 # How much literal text an agent's userPrompt may carry around the variable before
 # it is clearly being used for instructions.
-USER_PROMPT_LITERAL_LIMIT = 60
+USER_PROMPT_LITERAL_LIMIT = 40
 
 
 @dataclass

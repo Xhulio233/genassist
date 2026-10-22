@@ -544,3 +544,56 @@ input[type="checkbox"]:hover {
     animation: none;
   }
 }
+
+/* ── Assistant chat motion (components/panels/AssistantMotion.tsx) ── */
+@keyframes ai-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.ai-shimmer-text {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: ai-shimmer 1.8s linear infinite;
+}
+@keyframes ai-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+.ai-typing-dots { display: inline-flex; gap: 3px; align-items: center; }
+.ai-typing-dots span {
+  width: 4px; height: 4px; border-radius: 9999px;
+  background: hsl(var(--brand-600));
+  animation: ai-dot 1.2s ease-in-out infinite;
+}
+.ai-typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.ai-typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ai-ring {
+  0% { transform: scale(0.8); opacity: 0.6; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.ai-thinking-ring {
+  border: 1.5px solid hsl(var(--brand-600));
+  animation: ai-ring 1.6s ease-out infinite;
+}
+@keyframes ai-spark {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(20deg) scale(1.15); }
+}
+.ai-thinking-spark { animation: ai-spark 1.6s ease-in-out infinite; }
+@keyframes ai-caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.ai-caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -0.15em;
+  background: hsl(var(--brand-600)); animation: ai-caret 0.9s steps(2) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-shimmer-text, .ai-typing-dots span, .ai-thinking-ring, .ai-thinking-spark, .ai-caret { animation: none; }
+  .ai-shimmer-text { color: hsl(var(--muted-foreground)); background: none; }
+}

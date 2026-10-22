@@ -12,13 +12,16 @@ import json
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from app.modules.workflow.builder import catalog, patterns
+import re
+
+from app.modules.workflow.builder import catalog, patterns, resources
 from app.modules.workflow.builder.draft import DraftError, WorkflowDraft, load_draft, save_draft
 from app.modules.workflow.builder.resources import describe_resources
 from app.modules.workflow.builder.testing import (
     error_signature,
     run_draft_test,
     test_found_code_error,
+    test_passed,
     test_was_attempted,
 )
 
@@ -46,190 +49,81 @@ def _param(kind: str, description: str, required: bool = True) -> Dict[str, Any]
 
 _NODE_ID = "Node id from the workflow outline, e.g. \"n3\"."
 
-# Structured arguments are declared as JSON text, not as free-form objects: a tool
-# schema cannot describe an object whose keys depend on the node type, and models
-# tend to leave such undescribed objects empty. Both forms are accepted when parsed.
-_CONFIG_JSON = (
-    "A JSON object as text, mapping config field to value, e.g. "
-    "{\"matchMode\": \"contains\", \"limit\": 5}. "
-)
-
 TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "name": "get_workflow",
-        "description": (
-            "Return the current workflow as a compact outline: every node with its id, type, name and "
-            "non-default config, every connection, and any open issues. Call this first on every turn."
-        ),
+        "description": "The workflow outline: nodes with ids, settings, connections, open issues, workspace resources. Call first every turn.",
         "parameters": {},
     },
     {
         "name": "get_node",
-        "description": "Return one node's full config (including long prompts and code) and its connections.",
+        "description": "One node's full config (long prompts and code in full) and its connections.",
         "parameters": {"node_id": _param("string", _NODE_ID)},
     },
     {
-        "name": "search_nodes",
+        "name": "lookup_node",
         "description": (
-            "Find node types by what they do. Returns up to five matches with their type name, purpose "
-            "and handles. Use it whenever you are not sure which node type fits."
+            "Find node types by what they do, or by exact type name. Returns the matches and the full "
+            "settings, handles and usage rules of the best one."
         ),
-        "parameters": {"query": _param("string", "Keywords, e.g. \"send slack message\" or \"branch on value\".")},
-    },
-    {
-        "name": "get_node_schema",
-        "description": (
-            "Return one node type's config fields (with defaults and allowed values), handles and usage "
-            "rules. Call it before adding or configuring a node type you have not used in this conversation."
-        ),
-        "parameters": {"node_type": _param("string", "Exact node type, e.g. \"switchNode\".")},
+        "parameters": {"query": _param("string", "Keywords (\"send slack message\") or a type (\"switchNode\").")},
     },
     {
         "name": "get_pattern",
-        "description": (
-            "Return a proven recipe (the exact tool calls) for a common workflow shape. Call with no name "
-            "to list the available patterns."
-        ),
-        "parameters": {"name": _param("string", "Pattern name; omit to list them.", required=False)},
+        "description": "A ready apply_plan for a common shape, with notes. No name lists the patterns.",
+        "parameters": {"name": _param("string", "Pattern name.", required=False)},
     },
     {
         "name": "list_resources",
-        "description": (
-            "List what exists in this workspace that a node can use: knowledge bases, integrations "
-            "(Zendesk, Slack, WhatsApp, Salesforce, Jira connections) or data sources (Gmail, Calendar, "
-            "databases). Returns names and ids. Use it whenever the person refers to one by name, and "
-            "before adding a knowledge base or integration node, so you can set it instead of leaving "
-            "it for them."
-        ),
-        "parameters": {
-            "kind": _param("string", "One of: knowledge_bases, integrations, data_sources."),
-        },
+        "description": "Full list of the workspace's knowledge bases, integrations or data sources, when the outline shows only part.",
+        "parameters": {"kind": _param("string", "knowledge_bases, integrations or data_sources.")},
     },
     {
-        "name": "add_node",
+        "name": "apply_plan",
         "description": (
-            "Add a node to the main flow. Optionally connect it in the same call: connect_from is the "
-            "node that feeds it, connect_to the node it feeds. Giving both inserts it between two nodes. "
-            "Not for agent tools: use add_tool for those."
+            "Apply a JSON array of operations in order; failures are reported and skipped. New nodes get a "
+            "temporary \"id\": \"$name\" usable in later operations (\"$name.node\" is the node a tool runs). "
+            "Operations: "
+            "{op:add_node, id, node_type, name, system_prompt?, config?, connect_from?, connect_to?} "
+            "(connect_from \"n3\" or \"n3.output_true\"; both connect_from and connect_to inserts between them) | "
+            "{op:add_tool, id, agent_id, node_type, name, description, config?, parameters?} "
+            "(parameters {name: description} are what the agent passes, read in config as {{source.<name>}}) | "
+            "{op:set_node_field, node_id, field, value} | {op:update_node, node_id, config?, name?} | "
+            "{op:connect, source, target} | {op:disconnect, source, target} | {op:remove_node, node_id}. "
+            "config and parameters are JSON objects."
         ),
-        "parameters": {
-            "node_type": _param("string", "Exact node type, e.g. \"agentNode\"."),
-            "name": _param("string", "Short human-readable name shown on the canvas."),
-            "system_prompt": _param(
-                "string",
-                "For agentNode, subAgentNode and llmModelNode: the full system prompt, as plain text. "
-                "Always pass it when adding one of those nodes.",
-                required=False,
-            ),
-            "config": _param("string", _CONFIG_JSON + "Other config fields to set. Omit to keep defaults.", required=False),
-            "connect_from": _param("string", "Upstream node: \"n2\", or \"n2.output_true\" to pick a specific output.", required=False),
-            "connect_to": _param("string", "Downstream node id.", required=False),
-        },
-    },
-    {
-        "name": "add_tool",
-        "description": (
-            "Give an agent a tool. Creates the Tool Builder, the node it runs, and both connections in one "
-            "step. Use this for knowledge bases, integrations, API calls or code the agent should be able to call."
-        ),
-        "parameters": {
-            "agent_id": _param("string", "The agent node that gets the tool, e.g. \"n2\"."),
-            "node_type": _param("string", "Node type the tool runs, e.g. \"knowledgeBaseNode\", \"zendeskTicketNode\"."),
-            "name": _param("string", "Tool name the agent sees, e.g. \"Search Docs\"."),
-            "description": _param("string", "When the agent should call this tool."),
-            "config": _param("string", _CONFIG_JSON + "Config for the node the tool runs.", required=False),
-            "parameters": _param(
-                "string",
-                "A JSON object as text: the arguments the agent passes when calling the tool, as "
-                "{\"name\": \"description\"}. Read each one in the node's config as {{source.<name>}}.",
-                required=False,
-            ),
-        },
+        "parameters": {"operations": _param("string", "The JSON array of operations, as text.")},
     },
     {
         "name": "set_node_field",
-        "description": (
-            "Set one config field of a node. This is the way to write or rewrite a system prompt, a "
-            "template, code or any other long text: the value is passed as plain text, exactly as it "
-            "should be stored. Also works for any single setting."
-        ),
+        "description": "Set one config field as plain text: the way to write or rewrite a system prompt, template or code.",
         "parameters": {
             "node_id": _param("string", _NODE_ID),
-            "field": _param("string", "Config field name, e.g. \"systemPrompt\", \"template\", \"code\"."),
-            "value": _param(
-                "string",
-                "The new value. Text fields: the text itself. Other fields: JSON, e.g. true, 5 or [\"a\"].",
-            ),
-        },
-    },
-    {
-        "name": "update_node",
-        "description": (
-            "Change several config fields and/or the name of a node in one call. Only the fields you pass "
-            "change. For a Switch, passing `cases` recomputes its output handles. For a single long text "
-            "field prefer set_node_field."
-        ),
-        "parameters": {
-            "node_id": _param("string", _NODE_ID),
-            "config": _param("string", _CONFIG_JSON + "The fields to change.", required=False),
-            "name": _param("string", "New name.", required=False),
-        },
-    },
-    {
-        "name": "remove_node",
-        "description": "Remove a node and its connections. Removing a tool also removes the node it runs.",
-        "parameters": {"node_id": _param("string", _NODE_ID)},
-    },
-    {
-        "name": "connect",
-        "description": (
-            "Connect two existing nodes. Handles are inferred when there is only one choice; for a node "
-            "with several outputs (router, switch) name the output, e.g. source=\"n3.output_case_1\"."
-        ),
-        "parameters": {
-            "source": _param("string", "Upstream node: \"n3\" or \"n3.output_true\"."),
-            "target": _param("string", "Downstream node id."),
-        },
-    },
-    {
-        "name": "disconnect",
-        "description": "Remove the connection between two nodes.",
-        "parameters": {
-            "source": _param("string", "Upstream node: \"n3\" or \"n3.output_true\"."),
-            "target": _param("string", "Downstream node id."),
+            "field": _param("string", "e.g. \"systemPrompt\", \"template\", \"code\"."),
+            "value": _param("string", "The new value. Non-text fields as JSON (true, 5, [\"a\"])."),
         },
     },
     {
         "name": "test_workflow",
         "description": (
-            "Run the workflow once with a user message and see what the canvas shows under Response, "
-            "Debug and Execution: the reply, every node that ran with its output or error, the tool "
-            "calls agents made, and the nodes that did not run. Use it to confirm the workflow does "
-            "what was asked. This is a real run: if an agent decides to call a tool that sends or "
-            "creates something (an email, a ticket, a message), that really happens."
+            "Run the workflow once with a user message: returns the reply, each step's output or error, the "
+            "agents' tool calls and the steps that did not run. A real run: tools that send or create really do."
         ),
         "parameters": {
-            "message": _param("string", "The user message to run the workflow with."),
+            "message": _param("string", "The user message, written as a real person would."),
+            "finalize_if_ok": _param("string", "\"true\" to finalize in the same call when nothing failed and no errors are open.", required=False),
+            "summary": _param("string", "One sentence for the finalize.", required=False),
         },
     },
     {
         "name": "get_last_test_run",
-        "description": (
-            "Show the person's own most recent test run of this workflow on the canvas: their input, the "
-            "response they got, each step with its output or error, and the tool calls. Call it when "
-            "they say something is not working, so you see what they saw without them pasting a log."
-        ),
+        "description": "The person's own latest canvas test run: input, reply, each step's output or error, tool calls.",
         "parameters": {},
     },
     {
         "name": "finalize_workflow",
-        "description": (
-            "Validate the workflow and mark your changes complete. Call it once at the end of every turn in "
-            "which you changed the workflow. It fails with the list of errors to fix if the workflow is invalid."
-        ),
-        "parameters": {
-            "summary": _param("string", "One sentence describing what was built or changed.", required=False),
-        },
+        "description": "Validate and mark the workflow done, when a passing test already exists. Fails with the errors to fix.",
+        "parameters": {"summary": _param("string", "One sentence on what was built or changed.", required=False)},
     },
 ]
 
@@ -237,18 +131,133 @@ TOOL_NAMES = [tool["name"] for tool in TOOL_DEFINITIONS]
 
 # Tools that only read; they never create a draft or bump its revision.
 _READ_ONLY = {
-    "get_workflow", "get_node", "search_nodes", "get_node_schema", "get_pattern", "test_workflow",
-    "list_resources", "get_last_test_run",
+    "get_workflow", "get_node", "lookup_node", "get_pattern", "test_workflow", "list_resources",
+    "get_last_test_run",
 }
 
 
-def _search_nodes(query: str) -> str:
+def _lookup_node(query: str) -> str:
+    """Search plus the best match's schema, so finding and configuring a node is one call."""
+    query = (query or "").strip()
+    if catalog.is_known(query) and query not in catalog.HIDDEN_NODE_TYPES:
+        return catalog.node_schema_text(query)
     matches = catalog.search_nodes(query)
     if not matches:
         return f"No node type matches '{query}'. Node types:\n{catalog.compact_index()}"
-    return "\n".join(
-        f"{m['type']} ({m['label']}) — {m['description']} Handles ({m['handles']})" for m in matches
+    listing = "\n".join(f"- {m['type']} ({m['label']}): {m['description']}" for m in matches)
+    return f"Matches:\n{listing}\n\nDetails of {matches[0]['type']}:\n{catalog.node_schema_text(matches[0]['type'])}"
+
+
+_TEMP_ID = re.compile(r"\$[A-Za-z_]\w*(?:\.node)?")
+_TEMP_REF_FIELDS = ("connect_from", "connect_to", "agent_id", "node_id", "source", "target")
+_PLAN_OPS = {"add_node", "add_tool", "set_node_field", "update_node", "connect", "disconnect", "remove_node"}
+
+
+def _parse_plan(operations: Any) -> List[Dict[str, Any]]:
+    if isinstance(operations, str):
+        try:
+            operations = json.loads(operations)
+        except json.JSONDecodeError as exc:
+            raise DraftError(f"operations must be a JSON array: {exc}") from exc
+    if isinstance(operations, dict):
+        operations = operations.get("operations", [operations])
+    if not isinstance(operations, list) or not operations:
+        raise DraftError("operations must be a non-empty JSON array of {\"op\": ..., ...} objects.")
+    if not all(isinstance(op, dict) for op in operations):
+        raise DraftError("Every operation must be a JSON object.")
+    return operations
+
+
+def _resolve_temp_ids(value: Any, known: Dict[str, str], field: str = "") -> Any:
+    """
+    Replace "$name" ids with the aliases they became. Reference fields are replaced
+    whole; other strings only inside {{node_outputs.$name...}}, so a "$" in prose
+    is left alone. An unknown "$name" raises, naming it.
+    """
+    def lookup(match: re.Match) -> str:
+        token = match.group(0)
+        if token in known:
+            return known[token]
+        base = token.split(".")[0]
+        if base in known and token.endswith(".node"):
+            raise DraftError(f"{token} refers to a node that was not created by add_tool.")
+        raise DraftError(
+            f"unknown reference {token}: no earlier operation created it, or that operation failed."
+        )
+
+    if isinstance(value, str):
+        if field in _TEMP_REF_FIELDS:
+            return _TEMP_ID.sub(lookup, value)
+        return re.sub(
+            r"(\{\{node_outputs\.)(\$[A-Za-z_]\w*(?:\.node)?)",
+            lambda m: m.group(1) + lookup(_TEMP_ID.match(m.group(2))),
+            value,
+        )
+    if isinstance(value, dict):
+        return {k: _resolve_temp_ids(v, known, k if k in _TEMP_REF_FIELDS else "") for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_temp_ids(v, known) for v in value]
+    return value
+
+
+def apply_plan(draft: WorkflowDraft, operations: Any) -> str:
+    """
+    Apply a list of operations in order, resolving temporary ids as nodes are
+    created. Failed operations are reported with their reason and skipped, so
+    one bad step does not throw away the rest of the plan.
+    """
+    plan = _parse_plan(operations)
+    known: Dict[str, str] = {}
+    lines: List[str] = []
+    failures = 0
+    for index, raw in enumerate(plan, 1):
+        op = str(raw.get("op") or raw.get("action") or "").strip()
+        temp_id = raw.get("id")
+        try:
+            if op not in _PLAN_OPS:
+                raise DraftError(f"unknown op '{op}'. Use one of: {', '.join(sorted(_PLAN_OPS))}.")
+            if temp_id is not None and not re.fullmatch(r"\$[A-Za-z_]\w*", str(temp_id)):
+                raise DraftError(f"id must look like \"$name\", got {temp_id!r}.")
+            args = {k: v for k, v in raw.items() if k not in ("op", "action", "id") and v is not None}
+            args = _resolve_temp_ids(args, known)
+            if op == "add_node":
+                result = draft.add_node(
+                    args.get("node_type"), args.get("name"), args.get("config"),
+                    args.get("connect_from"), args.get("connect_to"), args.get("system_prompt"),
+                )
+                if temp_id:
+                    known[temp_id] = result["alias"]
+            elif op == "add_tool":
+                result = draft.add_tool(
+                    args.get("agent_id"), args.get("node_type"), args.get("name") or "Tool",
+                    args.get("description"), args.get("config"), args.get("parameters"),
+                )
+                if temp_id:
+                    known[temp_id] = result["tool"]
+                    known[f"{temp_id}.node"] = result["node"]
+            elif op == "set_node_field":
+                result = draft.set_field(args.get("node_id"), args.get("field"), args.get("value"))
+            elif op == "update_node":
+                result = draft.update_node(args.get("node_id"), args.get("config"), args.get("name"))
+            elif op == "remove_node":
+                result = draft.remove_node(args.get("node_id"))
+            elif op == "connect":
+                result = draft.connect(
+                    args.get("source"), args.get("target"), args.get("source_handle"), args.get("target_handle")
+                )
+            else:
+                result = draft.disconnect(args.get("source"), args.get("target"), args.get("source_handle"))
+            lines.append(f"{index}. {result['message']}")
+        except DraftError as exc:
+            failures += 1
+            label = f" ({temp_id})" if temp_id else ""
+            lines.append(f"{index}. {op}{label} FAILED: {exc}")
+    applied = len(plan) - failures
+    header = f"Applied {applied} of {len(plan)} operations." + (
+        f" {failures} failed; fix only those (later operations that referenced them failed too)."
+        if failures else ""
     )
+    return "\n".join([header, *lines])
 
 
 def _apply(draft: WorkflowDraft, name: str, args: Dict[str, Any]) -> str:
@@ -261,6 +270,8 @@ def _apply(draft: WorkflowDraft, name: str, args: Dict[str, Any]) -> str:
         )
     if name == "get_node":
         return draft.render_node(args.get("node_id"))
+    if name == "apply_plan":
+        return apply_plan(draft, args.get("operations"))
     if name == "add_node":
         return draft.add_node(
             args.get("node_type"), args.get("name"), args.get("config"),
@@ -303,10 +314,8 @@ async def run_tool(
     args = {k: v for k, v in (args or {}).items() if v is not None}
 
     # Catalog lookups do not touch the draft.
-    if name == "search_nodes":
-        return _search_nodes(str(args.get("query", "")))
-    if name == "get_node_schema":
-        return catalog.node_schema_text(str(args.get("node_type", "")).strip())
+    if name == "lookup_node":
+        return _lookup_node(str(args.get("query") or args.get("node_type") or ""))
     if name == "get_pattern":
         return patterns.describe(args.get("name"))
 
@@ -356,7 +365,30 @@ async def run_tool(
                             f"step, usually a language model step when the input is free text), or stop and "
                             f"tell the person what is failing."
                         )
+        if test_passed(result) and str(args.get("finalize_if_ok", "")).strip().lower() in ("true", "1", "yes"):
+            async with _lock_for(thread_id):
+                latest = await load_draft(thread_id)
+                if latest is not None and latest.revision == draft.revision:
+                    try:
+                        finalized = latest.finalize(str(args.get("summary") or ""))
+                        await save_draft(thread_id, latest)
+                        result += (
+                            f"\n{finalized['message']} If the reply above is not what the person asked for, "
+                            f"fix the cause and test again; the next passing test re-finalizes."
+                        )
+                    except DraftError as exc:
+                        result += f"\nNot finalized: {exc}"
         return result
+
+    if name == "get_workflow":
+        draft = await load_draft(thread_id) or WorkflowDraft()
+        outline = draft.render_outline()
+        if draft.authenticated:
+            # Listed here so a build needs no separate lookup call.
+            listing = await resources.summary()
+            if listing:
+                outline = f"{outline}\n{listing}"
+        return outline
 
     async with _lock_for(thread_id):
         draft = await load_draft(thread_id) or WorkflowDraft()

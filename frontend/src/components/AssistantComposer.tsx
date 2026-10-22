@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Sparkles } from "lucide-react";
 
 import { cn } from "@/helpers/utils";
 
 // The field grows with its content up to this height, then scrolls.
 const MAX_FIELD_HEIGHT_PX = 200;
+
+export interface ComposerMentionable {
+  id: string;
+  name: string;
+  /** Small secondary text in the picker (a node type, a role). */
+  hint?: string;
+}
+
+export interface ComposerCommand {
+  name: string;
+  description: string;
+}
 
 type AssistantComposerProps = {
   value: string;
@@ -15,13 +27,32 @@ type AssistantComposerProps = {
   /** Blocks typing and sending while the assistant is answering. */
   busy?: boolean;
   className?: string;
+  /** Things the person can @-mention (typing "@" opens a picker). */
+  mentionables?: ComposerMentionable[];
+  /** Commands offered when the message starts with "/". */
+  commands?: ComposerCommand[];
+  /**
+   * Called when a mention is picked. Return true to take it (shown as a chip by the
+   * caller); the "@query" text is then removed instead of being replaced by the name.
+   */
+  onMentionPick?: (mention: ComposerMentionable) => boolean;
 };
+
+interface Picker {
+  kind: "mention" | "command";
+  /** Index in `value` where the "@" or "/" sits. */
+  start: number;
+  query: string;
+}
 
 /**
  * The message box for the assistant surfaces: one rounded field with the send control inside it.
  * It starts as a single line and grows as the message wraps or gains lines (Shift+Enter).
  * Shared by the workflow builder's Conversational tab and the conversation detail's Ask GenAI
  * pane so both compose messages the same way.
+ *
+ * With `mentionables`, typing "@" opens a picker and the chosen name is inserted as "@Name";
+ * with `commands`, a message starting with "/" offers the commands.
  */
 export function AssistantComposer({
   value,
@@ -30,9 +61,14 @@ export function AssistantComposer({
   placeholder = "Ask GenAI...",
   busy = false,
   className,
+  mentionables,
+  commands,
+  onMentionPick,
 }: AssistantComposerProps) {
   const canSend = value.trim().length > 0 && !busy;
   const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const [picker, setPicker] = useState<Picker | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
 
   const fitToContent = useCallback(() => {
     const field = fieldRef.current;
@@ -59,52 +95,162 @@ export function AssistantComposer({
     return () => observer.disconnect();
   }, [fitToContent]);
 
+  // Work out whether the caret sits in an "@query" or a leading "/query".
+  const detectPicker = useCallback(
+    (text: string, caret: number): Picker | null => {
+      const before = text.slice(0, caret);
+      if (commands?.length) {
+        const command = /^\/([a-z]*)$/i.exec(before);
+        if (command) return { kind: "command", start: 0, query: command[1] };
+      }
+      if (mentionables?.length) {
+        const mention = /(?:^|\s)@([^@\n]*)$/.exec(before);
+        if (mention) {
+          return { kind: "mention", start: caret - mention[1].length - 1, query: mention[1] };
+        }
+      }
+      return null;
+    },
+    [commands, mentionables]
+  );
+
+  const options = useMemo(() => {
+    if (!picker) return [];
+    const query = picker.query.toLowerCase();
+    if (picker.kind === "command") {
+      return (commands ?? [])
+        .filter((c) => c.name.startsWith(query))
+        .map((c) => ({ key: c.name, label: `/${c.name}`, hint: c.description }));
+    }
+    return (mentionables ?? [])
+      .filter((m) => m.name.toLowerCase().includes(query))
+      .slice(0, 8)
+      .map((m) => ({ key: m.id, label: m.name, hint: m.hint }));
+  }, [picker, commands, mentionables]);
+
+  useEffect(() => setActiveIndex(0), [options.length, picker?.query]);
+
+  const choose = (option: { key: string; label: string }) => {
+    if (!picker) return;
+    const field = fieldRef.current;
+    const caret = field?.selectionStart ?? value.length;
+    let insert = picker.kind === "command" ? `${option.label} ` : `@${option.label} `;
+    if (picker.kind === "mention" && onMentionPick) {
+      const mention = mentionables?.find((m) => m.id === option.key);
+      if (mention && onMentionPick(mention)) insert = "";
+    }
+    const next = value.slice(0, picker.start) + insert + value.slice(caret);
+    onChange(next);
+    setPicker(null);
+    requestAnimationFrame(() => {
+      const position = picker.start + insert.length;
+      field?.focus();
+      field?.setSelectionRange(position, position);
+    });
+  };
+
   const submit = () => {
     if (!canSend) return;
+    setPicker(null);
     onSubmit(value.trim());
     onChange("");
   };
 
   return (
-    <div
-      className={cn(
-        "flex items-end gap-2 rounded-3xl border border-border bg-card py-1.5 pl-3.5 pr-1.5 shadow-sm transition-all focus-within:border-[hsl(var(--brand-600))] focus-within:ring-2 focus-within:ring-[hsl(var(--brand-600))]/20",
-        busy && "opacity-60",
-        className
+    <div className={cn("relative", className)}>
+      {picker && options.length > 0 && (
+        <ul
+          role="listbox"
+          className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-56 overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg"
+        >
+          {options.map((option, index) => (
+            <li key={option.key}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={index === activeIndex}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  choose(option);
+                }}
+                className={cn(
+                  "flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left text-sm",
+                  index === activeIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                )}
+              >
+                <span className="font-medium">{option.label}</span>
+                {option.hint && (
+                  <span className="truncate text-xs text-muted-foreground">{option.hint}</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) fieldRef.current?.focus();
-      }}
-    >
-      <Sparkles
-        className="pointer-events-none mb-2 h-4 w-4 shrink-0 text-[hsl(var(--brand-600))]"
-        aria-hidden
-      />
-      <textarea
-        ref={fieldRef}
-        rows={1}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            submit();
-          }
+      <div
+        className={cn(
+          "flex items-end gap-2 rounded-3xl border border-border bg-card py-1.5 pl-3.5 pr-1.5 shadow-sm transition-all focus-within:border-[hsl(var(--brand-600))] focus-within:ring-2 focus-within:ring-[hsl(var(--brand-600))]/20",
+          busy && "opacity-60"
+        )}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) fieldRef.current?.focus();
         }}
-        placeholder={placeholder}
-        disabled={busy}
-        aria-label={placeholder}
-        className="min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed"
-      />
-      <button
-        type="button"
-        onClick={submit}
-        disabled={!canSend}
-        aria-label="Send message"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--brand-600))] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:opacity-100 dark:disabled:bg-zinc-700"
       >
-        <ArrowUp className="h-4 w-4 text-white" aria-hidden />
-      </button>
+        <Sparkles
+          className="pointer-events-none mb-2 h-4 w-4 shrink-0 text-[hsl(var(--brand-600))]"
+          aria-hidden
+        />
+        <textarea
+          ref={fieldRef}
+          rows={1}
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setPicker(detectPicker(event.target.value, event.target.selectionStart ?? event.target.value.length));
+          }}
+          onKeyDown={(event) => {
+            if (picker && options.length > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveIndex((i) => (i + 1) % options.length);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveIndex((i) => (i - 1 + options.length) % options.length);
+                return;
+              }
+              if (event.key === "Enter" || event.key === "Tab") {
+                event.preventDefault();
+                choose(options[activeIndex]);
+                return;
+              }
+              if (event.key === "Escape") {
+                setPicker(null);
+                return;
+              }
+            }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          onBlur={() => setPicker(null)}
+          placeholder={placeholder}
+          disabled={busy}
+          aria-label={placeholder}
+          className="min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed"
+        />
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!canSend}
+          aria-label="Send message"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--brand-600))] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:opacity-100 dark:disabled:bg-zinc-700"
+        >
+          <ArrowUp className="h-4 w-4 text-white" aria-hidden />
+        </button>
+      </div>
     </div>
   );
 }

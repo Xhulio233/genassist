@@ -15,6 +15,7 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from app.modules.workflow.builder.assist import ACTION_NODE_TYPES
 from app.modules.workflow.builder.draft import PROVIDER_NODE_TYPES, WorkflowDraft
 from app.modules.workflow.builder.validation import VISUAL_NODE_TYPES, blocking
 
@@ -162,14 +163,39 @@ def format_test_result(
         lines.append("- nothing ran")
 
     tool_events = response.get("tool_events") or []
+    failed_tools: List[str] = []
     if tool_events:
         lines.append("Tool calls made by agents:")
         for event in tool_events:
-            detail = _clip(event.get("error") or event.get("result"), 300)
-            lines.append(
-                f"- {event.get('tool_name')}({_clip(event.get('arguments'), 200)}) "
-                f"{event.get('status')}: {detail}"
-            )
+            if event.get("status") == "failed" or event.get("error"):
+                failed_tools.append(str(event.get("tool_name")))
+                lines.append(
+                    f"- {event.get('tool_name')}({_clip(event.get('arguments'), 200)}) FAILED. "
+                    f"The tool's own error: \"{_clip(event.get('error') or event.get('result'), 400)}\""
+                )
+            else:
+                lines.append(
+                    f"- {event.get('tool_name')}({_clip(event.get('arguments'), 200)}) "
+                    f"{event.get('status')}: {_clip(event.get('result'), 300)}"
+                )
+    if failed_tools:
+        lines.append(
+            f"{len(failed_tools)} tool call(s) failed. Report the quoted error to the person as it is; do not "
+            f"guess a different cause. A missing selection is the cause only when the error says so and the "
+            f"setup list below confirms it."
+        )
+
+    setup_issues = [i for i in draft.issues() if i.severity == "setup"]
+    if setup_issues:
+        lines.append(
+            "Setup still missing on the canvas: "
+            + "; ".join(sorted({f"{draft.alias(i.node_id)}.{i.field}" for i in setup_issues}))
+        )
+    else:
+        lines.append(
+            "Setup: every provider, knowledge base and credential field is filled in. A failure is not a "
+            "missing selection."
+        )
 
     # An agent answering without touching its tools is the usual reason a reply ignores the
     # knowledge base or skips an action, and it is invisible unless called out.
@@ -221,6 +247,7 @@ async def run_draft_test(
     draft: WorkflowDraft,
     message: str,
     usage_sink: Optional[list] = None,
+    simulate_actions: Optional[bool] = None,
 ) -> str:
     """Execute the draft once with ``message`` and describe what happened."""
     message = (message or "").strip()
@@ -233,6 +260,15 @@ async def run_draft_test(
 
     # Run a copy: filling in the default provider for the test must not change the draft.
     nodes, edges = deepcopy(draft.nodes), deepcopy(draft.edges)
+    simulate = draft.simulate_actions if simulate_actions is None else simulate_actions
+    simulated: List[str] = []
+    if simulate:
+        # Bypassed steps pass their input through, so the tool call still happens and
+        # shows its arguments in the report; only the external action is skipped.
+        for node in nodes:
+            if node.get("type") in ACTION_NODE_TYPES and not (node.get("data") or {}).get("deactivated"):
+                node["data"]["deactivated"] = True
+                simulated.append(f"{draft.alias(node['id'])} \"{node['data'].get('name', '')}\"")
     missing_provider = [
         n for n in nodes
         if n.get("type") in PROVIDER_NODE_TYPES and not (n.get("data") or {}).get("providerId")
@@ -268,12 +304,29 @@ async def run_draft_test(
         logger.warning("Workflow builder test run failed: %s", exc, exc_info=True)
         return f"ERROR: the workflow could not be executed: {exc}"
 
-    return format_test_result(draft, message, response)
+    report = format_test_result(draft, message, response)
+    if simulated:
+        report += (
+            f"\nSimulated (nothing was really sent or created): {', '.join(simulated)}. The agent's tool "
+            f"calls above show what would have been sent. The person can turn simulation off on the canvas."
+        )
+    return report
 
 
 def test_was_attempted(result: str) -> bool:
     """A run counts as the required test unless it was refused for an invalid workflow or empty input."""
     return not result.startswith("ERROR:")
+
+
+def test_passed(result: str) -> bool:
+    """No step or tool failed and the run produced a reply."""
+    return (
+        test_was_attempted(result)
+        and not test_found_code_error(result)
+        and ": FAILED after " not in result
+        and " FAILED. The tool's own error" not in result
+        and "Response: none" not in result
+    )
 
 
 def test_found_code_error(result: str) -> bool:

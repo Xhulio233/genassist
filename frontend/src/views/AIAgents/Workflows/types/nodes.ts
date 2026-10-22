@@ -35,6 +35,9 @@ export interface BaseNodeData {
   // upstream node's output straight to the downstream node(s), as if this node
   // were not present. Persisted inside the node's `data` (workflows.nodes JSONB).
   deactivated?: boolean;
+  // Set on the canvas only, never persisted: the assistant's latest change is
+  // highlighted until the person keeps or undoes it (see utils/assistantDraft).
+  aiChange?: "added" | "changed";
   updateNodeData?: <T extends BaseNodeData>(
     nodeId: string,
     data: Partial<T>,

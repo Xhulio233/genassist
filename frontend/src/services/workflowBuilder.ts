@@ -41,6 +41,8 @@ export interface BuilderCanvasSnapshot {
   nodes: Record<string, unknown>[];
   edges: Record<string, unknown>[];
   selected_node_id?: string | null;
+  /** Whether the builder's test runs bypass steps that send or create things. */
+  simulate_actions?: boolean;
   /** The person's latest test run on the canvas, so the agent can see it without a pasted log. */
   last_test_run?: {
     inputs: Record<string, unknown>;
@@ -130,3 +132,65 @@ export const builderErrorMessage = (error: unknown): string | null => {
   }
   return null;
 };
+
+// ── Focused AI actions on the canvas (one model call, no builder turn) ──
+
+export type AssistAction =
+  | "explain_node"
+  | "explain_group"
+  | "describe_workflow"
+  | "explain_step"
+  | "suggest_tests"
+  | "review"
+  | "improve_prompt"
+  | "generate_code"
+  | "optimize";
+
+/** An approved change is applied with `applyBuilderOperations`; nothing lands until then. */
+export interface AssistProposal {
+  title: string;
+  why: string;
+  operations: Record<string, unknown>[];
+}
+
+export interface ReviewFinding {
+  severity: "error" | "warning" | "setup";
+  code: string;
+  node_id: string | null;
+  message: string;
+  /** A message to send the builder to fix it, or null when only the user can. */
+  fix: string | null;
+}
+
+export type AssistResult =
+  | { kind: "text"; text: string }
+  | { kind: "messages"; messages: string[] }
+  | { kind: "proposals"; proposals: AssistProposal[] }
+  | { kind: "review"; findings: ReviewFinding[] };
+
+export const runAssistAction = (
+  snapshot: BuilderCanvasSnapshot,
+  action: AssistAction,
+  nodeIds: string[] = [],
+  instruction = ""
+) =>
+  apiRequest<AssistResult>(
+    "POST",
+    `${BASE}/assist`,
+    { snapshot, action, node_ids: nodeIds, instruction } as unknown as Record<string, unknown>,
+    {},
+    { rethrowForbidden: true }
+  );
+
+/** Apply approved operations to the canvas as sent; returns the updated draft payload. */
+export const applyBuilderOperations = (
+  snapshot: BuilderCanvasSnapshot,
+  operations: Record<string, unknown>[]
+) =>
+  apiRequest<BuilderDraft & { report: string }>(
+    "POST",
+    `${BASE}/assist/apply`,
+    { snapshot, operations } as unknown as Record<string, unknown>,
+    {},
+    { rethrowForbidden: true }
+  );

@@ -82,3 +82,29 @@ async def describe_resources(kind: str) -> str:
         extra = f" — {item['description'][:120]}" if item.get("description") else ""
         lines.append(f"- {item['name']} [{item.get('type', '')}] id={item['id']}{extra}")
     return "\n".join(lines)
+
+
+SUMMARY_LIMIT = 12
+
+
+async def summary() -> str:
+    """
+    All kinds in one compact block, for the workflow outline. The builder then knows
+    what it can attach without a lookup call; the full listing stays available.
+    """
+    lines: List[str] = []
+    for kind, loader in _LOADERS.items():
+        try:
+            items = await loader()
+        except Exception as exc:
+            logger.warning("Workflow builder could not list %s: %s", kind, exc)
+            continue
+        if not items:
+            lines.append(f"- {kind.replace('_', ' ')}: none yet")
+            continue
+        shown = ", ".join(f"{item['name']} [{item.get('type', '')}] id={item['id']}" for item in items[:SUMMARY_LIMIT])
+        more = f" … and {len(items) - SUMMARY_LIMIT} more (list_resources)" if len(items) > SUMMARY_LIMIT else ""
+        lines.append(f"- {kind.replace('_', ' ')}: {shown}{more}")
+    if not lines:
+        return ""
+    return "Workspace resources (set the id on the node; ask only if several could fit):\n" + "\n".join(lines)

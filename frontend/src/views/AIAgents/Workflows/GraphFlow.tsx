@@ -30,6 +30,7 @@ import NodePanel, { NODE_PANEL_DEFAULT_WIDTH_PX } from "./components/panels/Node
 import BottomPanel from "./components/panels/BottomPanel";
 import WorkflowsSavedPanel from "./components/panels/WorkflowsSavedPanel";
 import { useCanvasAssistant } from "./hooks/useCanvasAssistant";
+import { FIX_ISSUES_MESSAGE } from "./utils/assistantDraft";
 import { useSchemaValidation } from "./hooks/useSchemaValidation";
 import { useUndoRedo } from "./hooks/useUndoRedo";
 import { AgentConfig, getAgentConfig, updateAgentConfig } from "@/services/api";
@@ -541,8 +542,13 @@ const GraphFlowContent: React.FC = () => {
   // run never has to be copied out of the debug view and pasted into the chat.
   const testHistoryRef = useRef(testHistory);
   testHistoryRef.current = testHistory;
+  // "Fix with AI" on an older run pins that run as what the assistant reads.
+  const pinnedRunIdRef = useRef<string | null>(null);
   const getLastTestRun = useCallback(() => {
-    const latest = testHistoryRef.current[0];
+    const pinned = pinnedRunIdRef.current
+      ? testHistoryRef.current.find((run) => run.id === pinnedRunIdRef.current)
+      : undefined;
+    const latest = pinned ?? testHistoryRef.current[0];
     if (!latest) return null;
     return { inputs: latest.inputs, response: latest.response, error: latest.error };
   }, []);
@@ -558,6 +564,143 @@ const GraphFlowContent: React.FC = () => {
     selectedNodeId: selectedNodes.length === 1 ? selectedNodes[0].id : null,
     workflowScopeId: agentId,
   });
+
+  const openAssistantPanel = useCallback(() => {
+    setHasStartedConversation(true);
+    setShowNodePanel(true);
+    setConversationalTabActive(true);
+  }, []);
+
+  // Centre the canvas on a node and, when asked, open its settings dialog (the
+  // node's own settings button, so the right dialog opens for every node type).
+  const focusNodeOnCanvas = useCallback(
+    (nodeId: string, openSettings: boolean) => {
+      reactFlowInstance?.fitView({ nodes: [{ id: nodeId }], duration: 400, padding: 0.5, maxZoom: 1.4 });
+      if (!openSettings) return;
+      setTimeout(() => {
+        const nodeEl = document.querySelector(`[data-id="${nodeId}"]`);
+        nodeEl?.querySelector<HTMLButtonElement>("[data-node-settings]")?.click();
+      }, 450);
+    },
+    [reactFlowInstance]
+  );
+
+  const nodeName = useCallback(
+    (id: string) => (nodes.find((n) => n.id === id)?.data?.name as string | undefined) ?? "this step",
+    [nodes]
+  );
+
+  const assistNode = useCallback(
+    (id: string, action: "explain_node" | "improve_prompt" | "generate_code" | "suggest_tests" | "explain_step") => {
+      openAssistantPanel();
+      if (action === "generate_code") {
+        const instruction = window.prompt(`What should "${nodeName(id)}" do?`);
+        if (!instruction?.trim()) return;
+        assistant.runAssist(action, [id], instruction.trim(), `Generate "${nodeName(id)}": ${instruction.trim()}`);
+        return;
+      }
+      assistant.runAssist(action, [id]);
+    },
+    [assistant, nodeName, openAssistantPanel]
+  );
+
+  const fixNodeWithAi = useCallback(
+    (id: string, problem: string) => {
+      openAssistantPanel();
+      assistant.sendMessage(`Fix the step "${nodeName(id)}": ${problem}. Fill it in sensibly, test, and finish.`, [id]);
+    },
+    [assistant, nodeName, openAssistantPanel]
+  );
+
+  const assistGroup = useCallback(
+    (groupId: string, action: "explain_group" | "optimize") => {
+      const members = nodes.filter((n) => (n.parentId ?? n.parentNode) === groupId).map((n) => n.id);
+      if (members.length === 0) return;
+      openAssistantPanel();
+      assistant.runAssist(action, members);
+    },
+    [assistant, nodes, openAssistantPanel]
+  );
+
+  const selectedExecutableIds = useMemo(
+    () => selectedNodes.filter((n) => !isGroupNode(n)).map((n) => n.id),
+    [selectedNodes]
+  );
+
+  const assistSelection = useCallback(
+    (action: "explain_group" | "optimize") => {
+      if (selectedExecutableIds.length === 0) return;
+      openAssistantPanel();
+      assistant.runAssist(action, selectedExecutableIds);
+    },
+    [assistant, openAssistantPanel, selectedExecutableIds]
+  );
+
+  // "Fix with AI" on a test run: that run is what the assistant reads for this message.
+  const fixTestRun = useCallback(
+    (run: TestRunRecord) => {
+      pinnedRunIdRef.current = run.id;
+      setActiveTab("workflow");
+      openAssistantPanel();
+      assistant.sendMessage(
+        `The test run "${run.label}" did not go well. Look at what happened, find the cause, fix it, and test again.`
+      );
+      pinnedRunIdRef.current = null;
+    },
+    [assistant, openAssistantPanel]
+  );
+
+  // A suggested test message is placed in the Executions tab, ready to run.
+  const runSuggestedTest = useCallback(
+    (message: string) => {
+      setWorkflow((current) => (current ? { ...current, testInput: { ...(current.testInput ?? {}), message } } : current));
+      setActiveTab("executions");
+    },
+    []
+  );
+
+  // "/explain", "/review", ... from the composer.
+  const handleAssistantCommand = useCallback(
+    (command: string, rest: string) => {
+      const focus = selectedExecutableIds;
+      switch (command) {
+        case "explain":
+          if (focus.length === 1) assistant.runAssist("explain_node", focus);
+          else if (focus.length > 1) assistant.runAssist("explain_group", focus);
+          else assistant.runAssist("describe_workflow");
+          return;
+        case "describe":
+          assistant.runAssist("describe_workflow");
+          return;
+        case "optimize":
+          assistant.runAssist("optimize", focus);
+          return;
+        case "review":
+          assistant.runAssist("review");
+          return;
+        case "tests":
+          assistant.runAssist("suggest_tests", focus.slice(0, 1));
+          return;
+        case "fix":
+          assistant.sendMessage(rest || FIX_ISSUES_MESSAGE, focus);
+          return;
+        case "undo":
+          if (!assistant.undoChanges()) toast("Nothing to undo.");
+          return;
+        default:
+          assistant.sendMessage(`${command} ${rest}`.trim(), focus);
+      }
+    },
+    [assistant, selectedExecutableIds]
+  );
+
+  const mentionables = useMemo(
+    () =>
+      nodes
+        .filter((n) => !isGroupNode(n) && typeof n.data?.name === "string")
+        .map((n) => ({ id: n.id, name: n.data.name as string, hint: n.type })),
+    [nodes]
+  );
 
   // Undo/Redo functionality
   const { undo, redo, canUndo, canRedo, takeSnapshot, resetHistory } =
@@ -1234,6 +1377,9 @@ const GraphFlowContent: React.FC = () => {
       setGroupColor,
       fitGroup,
       requestDeleteGroup,
+      assistNode,
+      fixNodeWithAi,
+      assistGroup,
     }),
     [
       duplicateNode,
@@ -1245,6 +1391,9 @@ const GraphFlowContent: React.FC = () => {
       setGroupColor,
       fitGroup,
       requestDeleteGroup,
+      assistNode,
+      fixNodeWithAi,
+      assistGroup,
     ]
   );
 
@@ -1698,6 +1847,8 @@ const GraphFlowContent: React.FC = () => {
               clickPosition={contextMenuPosition}
               onGroupSelection={groupSelection}
               canGroupSelection={selectedNodes.some((n) => !isGroupNode(n))}
+              onExplainSelection={() => assistSelection("explain_group")}
+              onOptimizeSelection={() => assistSelection("optimize")}
               onUngroupSelection={ungroupSelection}
               canUngroupSelection={selectedNodes.some(
                 (n) => isGroupNode(n) || !!getParentId(n)
@@ -1902,10 +2053,23 @@ const GraphFlowContent: React.FC = () => {
               messages={assistant.messages}
               isThinking={assistant.isThinking}
               activeConversationalTab={conversationalTabActive}
-              onSendMessage={(message) => {
-                assistant.sendMessage(message);
+              onSendMessage={(message, focusNodeIds) => {
+                assistant.sendMessage(message, focusNodeIds);
                 setHasStartedConversation(true);
               }}
+              onCommand={handleAssistantCommand}
+              mentionables={mentionables}
+              pendingChange={assistant.pendingChange}
+              onKeepChanges={assistant.keepChanges}
+              onUndoChanges={assistant.undoChanges}
+              onApplyProposal={assistant.applyProposal}
+              onRunSuggestedTest={runSuggestedTest}
+              onFocusNode={focusNodeOnCanvas}
+              simulateActions={assistant.simulateActions}
+              onSimulateActionsChange={assistant.setSimulateActions}
+              selectedNodeId={selectedNodes.length === 1 ? selectedNodes[0].id : null}
+              onUndoTurn={assistant.undoTurn}
+              onNewChat={assistant.clearHistory}
             />
 
             <WorkflowsSavedPanel
@@ -1940,6 +2104,7 @@ const GraphFlowContent: React.FC = () => {
                     onAddTestRun={handleAddTestRun}
                     onClearHistory={handleClearTestHistory}
                     onUpdateWorkflowTestInputs={handleUpdateWorkflowTestInputs}
+                    onFixRun={fixTestRun}
                   />
                 </div>
               </div>

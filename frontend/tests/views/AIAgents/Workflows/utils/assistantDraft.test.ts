@@ -3,6 +3,11 @@ import { Edge, Node } from "reactflow";
 import {
   changeKind,
   changesAffectLayout,
+  clearAiChanges,
+  markAiChanges,
+  mentionedNodeIds,
+  parseSlashCommand,
+  splitNodeMentions,
   mergeDraftNodes,
   reportableIssues,
   serializeCanvasForDraft,
@@ -114,5 +119,61 @@ describe("changesAffectLayout", () => {
   it("is false when only settings changed, so nothing the user arranged moves", () => {
     expect(changesAffectLayout([change("update_node"), change("update_node")])).toBe(false);
     expect(changesAffectLayout([])).toBe(false);
+  });
+});
+
+describe("change preview marks", () => {
+  it("marks added and changed nodes and clears the marks", () => {
+    const nodes = [node("a"), node("b"), node("c")];
+    const marked = markAiChanges(nodes, [
+      { op: "add_node", summary: "Added b", node_ids: ["b"] },
+      { op: "update_node", summary: "Updated c", node_ids: ["c"] },
+    ]);
+    expect(marked.map((n) => n.data.aiChange)).toEqual([undefined, "added", "changed"]);
+    expect(clearAiChanges(marked).map((n) => n.data.aiChange)).toEqual([undefined, undefined, undefined]);
+    expect(serializeCanvasForDraft(marked, []).nodes[1]).not.toHaveProperty("data.aiChange");
+  });
+});
+
+describe("slash commands and mentions", () => {
+  it("parses known commands only", () => {
+    expect(parseSlashCommand("/explain the billing step")).toEqual({ command: "explain", rest: "the billing step" });
+    expect(parseSlashCommand("/UNDO")).toEqual({ command: "undo", rest: "" });
+    expect(parseSlashCommand("/dance now")).toBeNull();
+    expect(parseSlashCommand("explain /review")).toBeNull();
+  });
+
+  it("resolves @Name mentions against the canvas, longest-safe", () => {
+    const nodes = [node("1", { name: "Support Agent" }), node("2", { name: "Support" }), node("3", { name: "Reply (final)" })];
+    expect(mentionedNodeIds("make @Support Agent shorter", nodes)).toEqual(["1", "2"]);
+    expect(mentionedNodeIds("fix @Reply (final) please", nodes)).toEqual(["3"]);
+    expect(mentionedNodeIds("no mentions here", nodes)).toEqual([]);
+  });
+});
+
+describe("splitNodeMentions", () => {
+  const nodes = [
+    { id: "1", name: "Support Agent" },
+    { id: "2", name: "Support" },
+    { id: "3", name: "Search Documentation" },
+  ];
+
+  it("turns @Name and quoted names into chips, longest name first", () => {
+    expect(splitNodeMentions('Fix "Search Documentation" and @Support Agent now', nodes)).toEqual([
+      { text: "Fix " },
+      { node: nodes[2] },
+      { text: " and " },
+      { node: nodes[0] },
+      { text: " now" },
+    ]);
+  });
+
+  it("accepts curly quotes and leaves unknown names as text", () => {
+    expect(splitNodeMentions("the “Support” step and “Nothing”", nodes)).toEqual([
+      { text: "the " },
+      { node: nodes[1] },
+      { text: " step and “Nothing”" },
+    ]);
+    expect(splitNodeMentions("plain text", nodes)).toEqual([{ text: "plain text" }]);
   });
 });

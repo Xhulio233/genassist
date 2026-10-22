@@ -1,9 +1,11 @@
 import { Edge, Node } from "reactflow";
 import type {
+  AssistProposal,
   BuilderCanvasSnapshot,
   BuilderChange,
   BuilderDraft,
   BuilderIssue,
+  ReviewFinding,
 } from "@/services/workflowBuilder";
 
 /**
@@ -20,6 +22,18 @@ export interface AssistantMessage {
   changes?: BuilderChange[];
   /** Problems the assistant's changes left behind (never pre-existing ones). */
   issues?: BuilderIssue[];
+  /** Changes proposed by a focused action, waiting for the person to apply them. */
+  proposals?: AssistProposal[];
+  /** Test messages suggested by a focused action; one click runs them. */
+  suggestions?: string[];
+  /** Findings of a review, each with a fix the builder can be asked for. */
+  findings?: ReviewFinding[];
+  /** When the reply arrived; replies that just arrived are revealed with a typing animation. */
+  arrivedAt?: number;
+  /** On the person's message: the assistant changed the canvas in response, so it can be undone. */
+  undoable?: boolean;
+  /** On the person's message: its changes were undone (or superseded by an earlier undo). */
+  undone?: boolean;
 }
 
 export type ChangeKind = "add" | "update" | "remove";
@@ -43,14 +57,16 @@ export function serializeCanvasForDraft(
   nodes: Node[],
   edges: Edge[],
   selectedNodeId?: string | null,
-  lastTestRun?: BuilderCanvasSnapshot["last_test_run"]
+  lastTestRun?: BuilderCanvasSnapshot["last_test_run"],
+  simulateActions = true
 ): BuilderCanvasSnapshot {
   return JSON.parse(
     JSON.stringify({
-      nodes,
+      nodes: clearAiChanges(nodes),
       edges,
       selected_node_id: selectedNodeId ?? null,
       last_test_run: lastTestRun ?? null,
+      simulate_actions: simulateActions,
     })
   ) as BuilderCanvasSnapshot;
 }
@@ -82,4 +98,114 @@ export function reportableIssues(draft: BuilderDraft): BuilderIssue[] {
   return draft.issues.filter(
     (issue) => !issue.pre_existing && issue.severity !== "setup"
   );
+}
+
+// ── Change preview ──
+// Nodes the assistant just added or changed carry `data.aiChange` until the
+// person keeps or undoes the turn, so the canvas can highlight them.
+
+export type AiChangeMark = "added" | "changed";
+
+export function markAiChanges(nodes: Node[], changes: BuilderChange[]): Node[] {
+  const added = new Set<string>();
+  const changed = new Set<string>();
+  for (const change of changes) {
+    const target = change.op === "add_node" || change.op === "add_tool" ? added : changed;
+    change.node_ids.forEach((id) => target.add(id));
+  }
+  if (added.size === 0 && changed.size === 0) return nodes;
+  return nodes.map((node) => {
+    const mark: AiChangeMark | undefined = added.has(node.id)
+      ? "added"
+      : changed.has(node.id)
+      ? "changed"
+      : undefined;
+    if (!mark) return node;
+    return { ...node, data: { ...node.data, aiChange: mark } };
+  });
+}
+
+export function clearAiChanges(nodes: Node[]): Node[] {
+  if (!nodes.some((node) => node.data?.aiChange)) return nodes;
+  return nodes.map((node) => {
+    if (!node.data?.aiChange) return node;
+    const { aiChange: _dropped, ...rest } = node.data as Record<string, unknown>;
+    return { ...node, data: rest };
+  });
+}
+
+// ── Slash commands in the chat ──
+
+export interface SlashCommand {
+  name: string;
+  description: string;
+}
+
+export const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "explain", description: "Explain the selected step, or the whole workflow" },
+  { name: "optimize", description: "Propose structural improvements" },
+  { name: "review", description: "Check the workflow for problems" },
+  { name: "describe", description: "Describe what this workflow does" },
+  { name: "tests", description: "Suggest test messages" },
+  { name: "fix", description: "Fix the open problems" },
+  { name: "undo", description: "Undo the assistant's last change" },
+];
+
+/** Split "/explain the billing step" into the command and the rest. */
+export function parseSlashCommand(text: string): { command: string; rest: string } | null {
+  const match = /^\/([a-z]+)\b\s*([\s\S]*)$/i.exec(text.trim());
+  if (!match) return null;
+  const command = match[1].toLowerCase();
+  if (!SLASH_COMMANDS.some((c) => c.name === command)) return null;
+  return { command, rest: match[2].trim() };
+}
+
+/** Node names written as @Name in a message, resolved against the canvas. */
+export function mentionedNodeIds(text: string, nodes: Node[]): string[] {
+  const names = new Map(
+    nodes
+      .filter((node) => typeof node.data?.name === "string")
+      .map((node) => [String(node.data.name).toLowerCase(), node.id])
+  );
+  const found: string[] = [];
+  for (const [lowerName, id] of names) {
+    const pattern = new RegExp(`@${lowerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
+    if (pattern.test(text) && !found.includes(id)) found.push(id);
+  }
+  return found;
+}
+
+export interface MentionableNode {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+export type MentionSegment = { text: string } | { node: MentionableNode };
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Split a message into text and the steps it names, written as @Name or as a
+ * quoted "Name" (straight or curly quotes). Longer names win over shorter ones
+ * they contain, so "Support Agent" is not read as "Support".
+ */
+export function splitNodeMentions(text: string, nodes: MentionableNode[]): MentionSegment[] {
+  const named = nodes.filter((node) => node.name.trim().length > 0);
+  if (!text || named.length === 0) return [{ text }];
+  const byLength = [...named].sort((a, b) => b.name.length - a.name.length);
+  const alternation = byLength.map((node) => escapeRegExp(node.name)).join("|");
+  const pattern = new RegExp(`@(${alternation})(?![\\w-])|["\u201c](${alternation})["\u201d]`, "gi");
+  const segments: MentionSegment[] = [];
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    const name = (match[1] ?? match[2]) as string;
+    const node = byLength.find((n) => n.name.toLowerCase() === name.toLowerCase());
+    if (!node || match.index === undefined) continue;
+    if (match.index > last) segments.push({ text: text.slice(last, match.index) });
+    segments.push({ node });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) segments.push({ text: text.slice(last) });
+  return segments.length ? segments : [{ text }];
 }

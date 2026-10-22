@@ -114,6 +114,9 @@ class WorkflowDraft:
         self.failed_tests = 0
         self.same_failure_count = 0
         self.last_failure = ""
+        # Builder test runs bypass steps that send or create things (tickets, emails,
+        # messages) unless the person turns simulation off on the canvas.
+        self.simulate_actions = True
         self._assign_aliases()
 
     # ── Construction / persistence ────────────────────────────────────────
@@ -129,7 +132,11 @@ class WorkflowDraft:
         last_test_run: Optional[Dict[str, Any]] = None,
     ) -> "WorkflowDraft":
         """Start a turn from the canvas as the user currently has it."""
-        draft = cls(deepcopy(nodes), deepcopy(edges), origin=ORIGIN_CANVAS if nodes else ORIGIN_NEW)
+        # A connection whose node is gone is invisible on the canvas and nothing the
+        # builder can act on, so it is dropped here rather than reported as an error.
+        ids = {n["id"] for n in nodes}
+        live_edges = [e for e in edges if e.get("source") in ids and e.get("target") in ids]
+        draft = cls(deepcopy(nodes), deepcopy(live_edges), origin=ORIGIN_CANVAS if nodes else ORIGIN_NEW)
         if previous:
             # Keep aliases stable across turns so the agent's memory of "n4" stays true.
             live_ids = {n["id"] for n in draft.nodes}
@@ -243,6 +250,7 @@ class WorkflowDraft:
             "failed_tests": self.failed_tests,
             "same_failure_count": self.same_failure_count,
             "last_failure": self.last_failure,
+            "simulate_actions": self.simulate_actions,
         }
 
     @classmethod
@@ -268,6 +276,7 @@ class WorkflowDraft:
         draft.failed_tests = int(payload.get("failed_tests") or 0)
         draft.same_failure_count = int(payload.get("same_failure_count") or 0)
         draft.last_failure = payload.get("last_failure") or ""
+        draft.simulate_actions = bool(payload.get("simulate_actions", True))
         draft._assign_aliases()
         return draft
 
@@ -549,7 +558,11 @@ class WorkflowDraft:
             if source:
                 notes.append(self._connect(source[0], node, source[1], None))
             if target:
-                notes.append(self._connect(node, target[0], None, target[1]))
+                # A branching node placed in front of something continues to it on its
+                # first output (output_true, output_case_1); the other outputs stay free.
+                outputs = catalog.handle_ids(node_type, data, "source")
+                first_output = outputs[0] if len(outputs) > 1 and "output" not in outputs else None
+                notes.append(self._connect(node, target[0], first_output, target[1]))
         except DraftError:
             self.nodes.remove(node)
             self.aliases.pop(node["id"], None)

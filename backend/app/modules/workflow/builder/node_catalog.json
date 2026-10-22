@@ -584,6 +584,58 @@
     }
   },
   {
+    "type": "loopNode",
+    "label": "Loop",
+    "description": "Repeats a set of nodes for every item of a list, or until a condition is met.",
+    "category": "routing",
+    "dynamicHandles": false,
+    "defaultData": {
+      "name": "Loop",
+      "mode": "forEach",
+      "items": "",
+      "batchSize": 1,
+      "maxIterations": 100,
+      "stopField": "",
+      "stopOperator": "equal",
+      "stopValue": "",
+      "stopCaseSensitive": false,
+      "onError": "stop",
+      "delaySeconds": 0,
+      "delayBackoff": false,
+      "timeLimitSeconds": 0,
+      "collect": "all",
+      "handlers": [
+        {
+          "id": "input",
+          "type": "target",
+          "compatibility": "any",
+          "position": "left"
+        },
+        {
+          "id": "input_loop",
+          "type": "target",
+          "compatibility": "any",
+          "position": "bottom",
+          "label": "Loop back"
+        },
+        {
+          "id": "output_loop",
+          "type": "source",
+          "compatibility": "any",
+          "position": "right",
+          "label": "Loop body"
+        },
+        {
+          "id": "output_done",
+          "type": "source",
+          "compatibility": "any",
+          "position": "right",
+          "label": "Done"
+        }
+      ]
+    }
+  },
+  {
     "type": "mcpNode",
     "label": "MCP Server",
     "description": "Connects to an MCP (Model Context Protocol) server and exposes selected tools to agents.",

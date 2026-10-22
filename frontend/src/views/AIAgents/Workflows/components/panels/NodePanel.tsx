@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useCallback } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/tabs";
-import { AlertTriangle, GripVertical, HelpCircle, Search, Sparkles, Plus, Pencil, Trash2, X, ExternalLink } from "lucide-react";
+import { AlertTriangle, GripVertical, HelpCircle, Search, Sparkles, Plus, Pencil, Trash2, X, ExternalLink, Undo2, MoreHorizontal, MessageSquarePlus } from "lucide-react";
 import { RichInput } from "@/components/richInput";
 import nodeRegistry from "@/views/AIAgents/Workflows/registry/nodeRegistry";
 import { getNodeBgColor, getNodeIconColor } from "@/views/AIAgents/Workflows/utils/nodeColors";
@@ -9,7 +9,23 @@ import { useFeatureFlagVisible } from "@/components/featureFlag";
 import { FeatureFlags } from "@/config/featureFlags";
 import { useHiddenNodeTypes } from "../../hooks/useHiddenNodeTypes";
 import type { AssistantMessage } from "@/views/AIAgents/Workflows/utils/assistantDraft";
-import { changeKind, FIX_ISSUES_MESSAGE } from "@/views/AIAgents/Workflows/utils/assistantDraft";
+import {
+  parseSlashCommand,
+  SLASH_COMMANDS,
+} from "@/views/AIAgents/Workflows/utils/assistantDraft";
+import type { AssistProposal } from "@/services/workflowBuilder";
+import type { ComposerMentionable } from "@/components/AssistantComposer";
+import type { PendingChange } from "@/views/AIAgents/Workflows/hooks/useCanvasAssistant";
+import { AssistantMessageExtras, PendingChangeBar } from "./AssistantMessageExtras";
+import { MentionedNodesRow, MentionText, NodeChip } from "./NodeChips";
+import { ThinkingIndicator, Typewriter } from "./AssistantMotion";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/dropdown-menu";
+import { Checkbox } from "@/components/checkbox";
 import FormattedText from "@/components/FormattedText";
 import { AssistantComposer } from "@/components/AssistantComposer";
 import { AssistantEmptyState } from "@/components/AssistantEmptyState";
@@ -75,7 +91,25 @@ interface NodePanelProps {
   messages?: AssistantMessage[];
   isThinking?: boolean;
   activeConversationalTab?: boolean;
-  onSendMessage?: (message: string) => void;
+  onSendMessage?: (message: string, focusNodeIds?: string[]) => void;
+  /** "/explain", "/review", ... typed in the composer. */
+  onCommand?: (command: string, rest: string) => void;
+  /** Nodes the person can @-mention. */
+  mentionables?: ComposerMentionable[];
+  pendingChange?: PendingChange | null;
+  onKeepChanges?: () => void;
+  onUndoChanges?: () => void;
+  onApplyProposal?: (messageId: string, proposal: AssistProposal) => void;
+  onRunSuggestedTest?: (message: string) => void;
+  onFocusNode?: (nodeId: string, openSettings: boolean) => void;
+  simulateActions?: boolean;
+  onSimulateActionsChange?: (value: boolean) => void;
+  /** The node selected on the canvas, shown as context under the composer. */
+  selectedNodeId?: string | null;
+  /** Undo everything the assistant changed in response to one of the person's messages. */
+  onUndoTurn?: (messageId: string) => void;
+  /** Forget this chat and start a new conversation with the assistant. */
+  onNewChat?: () => void;
 }
 
 interface HelpDialogState {
@@ -101,7 +135,29 @@ const NodePanel: React.FC<NodePanelProps> = ({
   isThinking = false,
   activeConversationalTab = false,
   onSendMessage,
+  onCommand,
+  mentionables = [],
+  pendingChange = null,
+  onKeepChanges,
+  onUndoChanges,
+  onApplyProposal,
+  onRunSuggestedTest,
+  onFocusNode,
+  simulateActions = true,
+  onSimulateActionsChange,
+  selectedNodeId = null,
+  onUndoTurn,
+  onNewChat,
 }) => {
+  // Steps the person attached to the next message (picked with "@"), shown as chips.
+  const [focusChips, setFocusChips] = useState<ComposerMentionable[]>([]);
+  const chipNodes = mentionables.map((m) => ({ id: m.id, name: m.name, type: m.hint }));
+  const selectedNode = selectedNodeId ? chipNodes.find((n) => n.id === selectedNodeId) : undefined;
+  const focusCanvasNode = (nodeId: string) => onFocusNode?.(nodeId, false);
+  // Replies already revealed; a re-render must not type them out again.
+  const revealedRef = useRef<Set<string>>(new Set());
+  const shouldReveal = (msg: AssistantMessage) =>
+    !!msg.arrivedAt && Date.now() - msg.arrivedAt < 15_000 && !revealedRef.current.has(msg.id);
   const nodeCategories = nodeRegistry.getAllCategories();
   const [draggingNodeType, setDraggingNodeType] = useState<string | null>(null);
   const dragPreviewContainerRef = useRef<HTMLDivElement>(null);
@@ -179,8 +235,19 @@ const NodePanel: React.FC<NodePanelProps> = ({
   }, [isOpen, activeTab, showConversationalTab]);
 
   // The composer owns the trimming, the Enter key and clearing the field.
-  const handleSend = (message: string) => {
-    if (onSendMessage) onSendMessage(message);
+  // "/command rest" goes to the command handler; "@Name" mentions become the focus of the message.
+  const handleSend = (message: string, focusNodeIds?: string[]) => {
+    const command = parseSlashCommand(message);
+    if (command && onCommand) {
+      onCommand(command.command, command.rest);
+      return;
+    }
+    const mentioned = mentionables
+      .filter((m) => new RegExp(`@${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(message))
+      .map((m) => m.id);
+    const chips = focusChips.map((m) => m.id);
+    setFocusChips([]);
+    onSendMessage?.(message, focusNodeIds ?? [...chips, ...mentioned.filter((id) => !chips.includes(id))]);
   };
 
   // Handle drag start
@@ -535,9 +602,36 @@ const NodePanel: React.FC<NodePanelProps> = ({
                   <TabsTrigger
                     value="conversational"
                     aria-label="Conversational AI"
-                    className="flex-1 text-sm font-medium rounded-full"
+                    className="relative flex-1 text-sm font-medium rounded-full"
                   >
                     Conversational
+                    {onNewChat && activeTab === "conversational" && (
+                      // A span, not a button: it sits inside the tab's own button.
+                      <DropdownMenu modal={false}>
+                        <DropdownMenuTrigger asChild>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            title="Chat options"
+                            aria-label="Chat options"
+                            onClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </span>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" sideOffset={6} className="z-[2100] min-w-[180px]">
+                          <DropdownMenuItem
+                            disabled={isThinking || messages.length === 0}
+                            onSelect={() => setTimeout(onNewChat, 0)}
+                          >
+                            <MessageSquarePlus className="mr-2 h-4 w-4" />
+                            New chat
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -585,18 +679,56 @@ const NodePanel: React.FC<NodePanelProps> = ({
                 {/* Messages area */}
                 <div ref={conversationScrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
                   {messages.length === 0 && !isThinking ? (
-                    <AssistantEmptyState
-                      title="Let's create your agent together."
-                      prompt="What would you like your agent to do?"
-                    />
+                    <div>
+                      <AssistantEmptyState
+                        title="Let's create your agent together."
+                        prompt="What would you like your agent to do?"
+                      />
+                      {onCommand && (
+                        <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                          {[
+                            ["describe", "Describe this workflow"],
+                            ["review", "Review for problems"],
+                            ["tests", "Suggest test messages"],
+                            ["optimize", "Optimize"],
+                          ].map(([command, label]) => (
+                            <button
+                              key={command}
+                              type="button"
+                              onClick={() => onCommand(command, "")}
+                              className="rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-foreground hover:bg-muted"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <>
                       {messages.map((msg) => (
                         <div key={msg.id}>
                           {msg.speaker === "customer" ? (
-                            <div className="flex justify-end">
-                              <div className="max-w-[80%] bg-blue-600 text-white text-sm rounded-2xl rounded-br-md px-4 py-2.5">
-                                {msg.text}
+                            <div className="group flex items-end justify-end gap-1.5">
+                              {msg.undoable && !msg.undone && onUndoTurn && (
+                                <button
+                                  type="button"
+                                  onClick={() => onUndoTurn(msg.id)}
+                                  disabled={isThinking}
+                                  title="Undo everything the assistant changed for this message"
+                                  aria-label="Undo this message's changes"
+                                  className="mb-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-60 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 disabled:opacity-30"
+                                >
+                                  <Undo2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              <div
+                                className={`max-w-[80%] bg-blue-600 text-white text-sm rounded-2xl rounded-br-md px-4 py-2.5 ${
+                                  msg.undone ? "opacity-60 line-through decoration-white/60" : ""
+                                }`}
+                                title={msg.undone ? "The changes for this message were undone" : undefined}
+                              >
+                                <MentionText text={msg.text} nodes={chipNodes} onFocusNode={focusCanvasNode} inverted />
                               </div>
                             </div>
                           ) : (
@@ -608,94 +740,79 @@ const NodePanel: React.FC<NodePanelProps> = ({
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="text-sm text-foreground leading-relaxed">
-                                  <FormattedText text={msg.text} />
+                                  <Typewriter
+                                    text={msg.text}
+                                    animate={shouldReveal(msg)}
+                                    onDone={() => revealedRef.current.add(msg.id)}
+                                  >
+                                    <FormattedText text={msg.text} />
+                                    <MentionedNodesRow text={msg.text} nodes={chipNodes} onFocusNode={focusCanvasNode} />
+                                  </Typewriter>
                                 </div>
-                                {msg.changes && msg.changes.length > 0 && (
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {msg.changes.map((change, index) => {
-                                      const kind = changeKind(change);
-                                      const Icon = kind === "add" ? Plus : kind === "update" ? Pencil : Trash2;
-                                      const colorClass =
-                                        kind === "add"
-                                          ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30"
-                                          : kind === "update"
-                                          ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/30"
-                                          : "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30";
-                                      return (
-                                        <span
-                                          key={`${change.op}-${index}`}
-                                          className={`inline-flex items-center gap-1 text-xs border rounded-full px-2.5 py-1 ${colorClass}`}
-                                        >
-                                          <Icon className="h-3 w-3" />
-                                          {change.summary}
-                                        </span>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                                {msg.issues && msg.issues.length > 0 && (
-                                  <ul className="mt-2 space-y-1">
-                                    {msg.issues.map((issue, index) => (
-                                      <li
-                                        key={`${issue.code}-${index}`}
-                                        className={`flex items-start gap-1.5 text-xs rounded-md border px-2.5 py-1.5 ${
-                                          issue.severity === "error"
-                                            ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30"
-                                            : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30"
-                                        }`}
-                                      >
-                                        <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                        <span>{issue.message}</span>
-                                      </li>
-                                    ))}
-                                    {msg.issues.some((issue) => issue.severity === "error") &&
-                                      msg.id === messages[messages.length - 1]?.id &&
-                                      !isThinking && (
-                                        <li>
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-7 text-xs"
-                                            onClick={() => handleSend(FIX_ISSUES_MESSAGE)}
-                                          >
-                                            Fix these
-                                          </Button>
-                                        </li>
-                                      )}
-                                  </ul>
-                                )}
+                                <AssistantMessageExtras
+                                  msg={msg}
+                                  isLatest={msg.id === messages[messages.length - 1]?.id}
+                                  busy={isThinking}
+                                  onSend={handleSend}
+                                  onApplyProposal={onApplyProposal}
+                                  onRunSuggestedTest={onRunSuggestedTest}
+                                  onFocusNode={onFocusNode}
+                                />
                               </div>
                             </div>
                           )}
                         </div>
                       ))}
-                      {isThinking && (
-                        <div className="flex gap-2.5">
-                          <div className="flex-shrink-0 mt-1">
-                            <div className="h-6 w-6 rounded-full bg-[hsl(var(--brand-50))] flex items-center justify-center">
-                              <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--brand-600))] animate-pulse" />
-                            </div>
-                          </div>
-                          <div className="text-sm text-muted-foreground flex items-center gap-1">
-                            <span className="animate-pulse">Thinking</span>
-                            <span className="animate-bounce" style={{ animationDelay: "0ms" }}>.</span>
-                            <span className="animate-bounce" style={{ animationDelay: "150ms" }}>.</span>
-                            <span className="animate-bounce" style={{ animationDelay: "300ms" }}>.</span>
-                          </div>
-                        </div>
-                      )}
+                      {isThinking && <ThinkingIndicator />}
                     </>
                   )}
                 </div>
+                {pendingChange && onKeepChanges && onUndoChanges && (
+                  <PendingChangeBar change={pendingChange} onKeep={onKeepChanges} onUndo={onUndoChanges} />
+                )}
                 {/* Input bar */}
-                <div className="p-3">
+                <div className="p-3 pt-0">
+                  {(focusChips.length > 0 || selectedNode) && (
+                    <div className="mb-1.5 flex flex-wrap items-center gap-1 px-1">
+                      {focusChips.map((chip) => (
+                        <NodeChip
+                          key={chip.id}
+                          node={{ id: chip.id, name: chip.name, type: chip.hint }}
+                          onClick={focusCanvasNode}
+                          onRemove={(id) => setFocusChips((prev) => prev.filter((c) => c.id !== id))}
+                        />
+                      ))}
+                      {focusChips.length === 0 && selectedNode && (
+                        <>
+                          <span className="text-[11px] text-muted-foreground">Selected:</span>
+                          <NodeChip node={selectedNode} onClick={focusCanvasNode} soft />
+                        </>
+                      )}
+                    </div>
+                  )}
                   <AssistantComposer
                     value={inputMessage}
                     onChange={setInputMessage}
                     onSubmit={handleSend}
-                    placeholder="Ask AI to update your workflow..."
+                    placeholder="Ask AI to update your workflow... (@ a step, / for commands)"
                     busy={isThinking}
+                    mentionables={mentionables}
+                    commands={SLASH_COMMANDS}
+                    onMentionPick={(mention) => {
+                      setFocusChips((prev) => (prev.some((c) => c.id === mention.id) ? prev : [...prev, mention]));
+                      return true;
+                    }}
                   />
+                  {onSimulateActionsChange && (
+                    <label className="mt-2 flex cursor-pointer items-center gap-2 px-1 text-[11px] text-muted-foreground">
+                      <Checkbox
+                        checked={simulateActions}
+                        onCheckedChange={(checked) => onSimulateActionsChange(checked === true)}
+                        className="h-3.5 w-3.5"
+                      />
+                      Simulate actions (tickets, emails, messages) in AI test runs
+                    </label>
+                  )}
                 </div>
               </div>
             )}

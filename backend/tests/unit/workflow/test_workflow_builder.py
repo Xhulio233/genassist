@@ -455,18 +455,21 @@ def test_tools_build_a_workflow_and_report_errors_as_text(monkeypatch):
         run = lambda tool, **args: tools.run_tool("t1", tool, args)
         assert "empty" in await run("get_workflow")
         assert "t1" not in store  # reading never creates a draft
-        await run("add_node", node_type="chatInputNode", name="Start")
-        assert (await run("add_node", node_type="agentNode", name="A", connect_from="n9")).startswith("ERROR:")
+        plan = lambda *ops: json.dumps(list(ops))
+        await run("apply_plan", operations=plan({"op": "add_node", "node_type": "chatInputNode", "name": "Start"}))
+        bad = await run("apply_plan", operations=plan({"op": "add_node", "node_type": "agentNode", "name": "A", "connect_from": "n9"}))
+        assert "FAILED: No node 'n9'" in bad
         # Parallel tool calls must not lose each other's writes.
         await asyncio.gather(
-            run("add_node", node_type="agentNode", name="A", config={"systemPrompt": "x"}, connect_from="n1"),
-            run("add_node", node_type="templateNode", name="T", config={"template": "t"}),
+            run("apply_plan", operations=plan({"op": "add_node", "node_type": "agentNode", "name": "A", "system_prompt": "x", "connect_from": "n1"})),
+            run("apply_plan", operations=plan({"op": "add_node", "node_type": "templateNode", "name": "T", "config": {"template": "t"}})),
         )
         outline = await run("get_workflow")
         assert "agentNode" in outline and "templateNode" in outline
         assert (await run("finalize_workflow")).startswith("ERROR:")
-        assert "zendeskTicketNode" in await run("search_nodes", query="zendesk")
-        assert "cases" in await run("get_node_schema", node_type="switchNode")
+        zendesk = await run("lookup_node", query="zendesk ticket")
+        assert "zendeskTicketNode" in zendesk and "Details of zendeskTicketNode" in zendesk
+        assert "cases" in await run("lookup_node", query="switchNode")
         assert "intent_routing" in await run("get_pattern")
 
     asyncio.run(scenario())
@@ -477,7 +480,7 @@ def test_every_tool_definition_is_dispatchable():
 
     draft = chatbot()
     for definition in TOOL_DEFINITIONS:
-        if definition["name"] in ("search_nodes", "get_node_schema", "get_pattern"):
+        if definition["name"] in ("lookup_node", "get_pattern", "list_resources"):
             continue
         try:
             _apply(draft, definition["name"], {})
@@ -506,9 +509,9 @@ def test_builder_tools_node_exposes_one_tool_per_definition():
     assert [t.name for t in tools] == TOOL_NAMES
     assert all(t.node_id == f"tools:{t.name}" for t in tools)
     # Parameters are in the shape agents turn into a tool schema.
-    add_node = next(t for t in tools if t.name == "add_node")
-    assert add_node.parameters["node_type"]["required"] is True
-    assert "system_prompt" in add_node.parameters
+    plan_tool = next(t for t in tools if t.name == "apply_plan")
+    assert plan_tool.parameters["operations"]["required"] is True
+    assert "add_tool" in plan_tool.description and "$name" in plan_tool.description
 
     limited = WorkflowBuilderToolsNode("tools", {"data": {"enabledTools": ["get_workflow"]}}, _State())
     assert [t.name for t in limited.get_tools()] == ["get_workflow"]
@@ -548,9 +551,11 @@ def test_seeded_builder_workflow_is_current_and_valid():
     # Every tool the prompt tells the agent to call exists.
     from app.modules.workflow.builder.tools import TOOL_NAMES
 
-    for name in ("get_workflow", "search_nodes", "get_node_schema", "get_pattern", "add_tool",
-                 "get_node", "set_node_field", "test_workflow", "finalize_workflow"):
+    for name in ("get_workflow", "lookup_node", "get_pattern", "apply_plan", "get_node", "set_node_field",
+                 "test_workflow", "get_last_test_run", "finalize_workflow"):
         assert name in prompt and name in TOOL_NAMES
+    # Every tool the agent has is one the prompt tells it about.
+    assert all(name in prompt for name in TOOL_NAMES)
 
 
 def test_patterns_reference_only_real_node_types_and_config_fields():
@@ -560,8 +565,9 @@ def test_patterns_reference_only_real_node_types_and_config_fields():
     from app.modules.workflow.builder.patterns import PATTERNS
 
     for name, pattern in PATTERNS.items():
-        for node_type in set(re.findall(r'node_type="(\w+)"', pattern["recipe"])):
-            assert catalog.is_known(node_type), f"{name}: unknown node type {node_type}"
+        for op in pattern.get("plan") or []:
+            if op.get("node_type"):
+                assert catalog.is_known(op["node_type"]), f"{name}: unknown node type {op['node_type']}"
 
 
 # ── Writing prompts and single fields ─────────────────────────────────────
@@ -875,7 +881,8 @@ def test_recipes_only_use_valid_variables():
     from app.modules.workflow.builder.validation import VARIABLE_ROOTS, _TEMPLATE_REF
 
     for name, pattern in PATTERNS.items():
-        for root, _rest in _TEMPLATE_REF.findall(pattern["recipe"]):
+        text = json.dumps(pattern.get("plan") or []) + pattern.get("notes", "")
+        for root, _rest in _TEMPLATE_REF.findall(text):
             assert root in VARIABLE_ROOTS or root == "total", f"{name}: {{{{{root}}}}}"
 
 
@@ -913,11 +920,12 @@ def test_a_test_run_through_the_tools_unlocks_finalize(monkeypatch):
 
     async def scenario():
         run = lambda tool, **args: tools.run_tool("t", tool, args)
-        added = await run("add_node", node_type="chatInputNode", name="Start")
+        plan = lambda *ops: json.dumps(list(ops))
+        added = await run("apply_plan", operations=plan({"op": "add_node", "node_type": "chatInputNode", "name": "Start"}))
         assert "Open errors" in added  # every change reports what is still missing
-        await run("add_node", node_type="templateNode", name="Echo", connect_from="n1",
-                  config='{"template": "You said: {{session.message}}"}')
-        done = await run("add_node", node_type="chatOutputNode", name="Reply", connect_from="n2")
+        await run("apply_plan", operations=plan({"op": "add_node", "node_type": "templateNode", "name": "Echo",
+                                                 "connect_from": "n1", "config": {"template": "You said: {{session.message}}"}}))
+        done = await run("apply_plan", operations=plan({"op": "add_node", "node_type": "chatOutputNode", "name": "Reply", "connect_from": "n2"}))
         assert done.endswith("No open errors.")
         assert "test_workflow" in await run("finalize_workflow")
         assert "You said: hi" in await run("test_workflow", message="hi")
@@ -1090,8 +1098,314 @@ def test_guidance_sends_free_text_understanding_to_a_language_model():
     from app.modules.workflow.builder.patterns import PATTERNS, describe
 
     prompt = build_system_prompt()
-    assert "is the input free text written by a person that has to be understood" in prompt
-    assert 'get_pattern("text_transform")' in prompt
+    assert "does the input have to be understood" in prompt
+    assert "text_transform" in prompt
     recipe = describe("text_transform")
-    assert 'node_type="llmModelNode"' in recipe and "pythonCodeNode" in recipe
+    assert '"node_type": "llmModelNode"' in recipe and "pythonCodeNode" in recipe
     assert "Not for understanding free text" in PATTERNS["exact_logic"]["summary"]
+
+
+# ── Phase 1: fewer model calls ────────────────────────────────────────────
+
+
+def test_apply_plan_builds_a_whole_workflow_with_temporary_ids():
+    from app.modules.workflow.builder.tools import apply_plan
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    draft.add_node("chatOutputNode", "Reply")
+    plan = [
+        {"op": "add_node", "id": "$agent", "node_type": "agentNode", "name": "Support",
+         "system_prompt": "Help.", "connect_from": "n1", "connect_to": "n2"},
+        {"op": "add_tool", "id": "$docs", "agent_id": "$agent", "node_type": "knowledgeBaseNode",
+         "name": "Search Docs", "description": "Search.", "config": {"selectedBases": ["kb-1"]}},
+        {"op": "add_node", "id": "$fmt", "node_type": "templateNode", "name": "Format",
+         "config": {"template": "{{node_outputs.$agent.message}} ({{node_outputs.$docs.node.result}})"},
+         "connect_from": "$agent", "connect_to": "n2"},
+        {"op": "set_node_field", "node_id": "$agent", "field": "maxIterations", "value": "9"},
+    ]
+    text = apply_plan(draft, json.dumps(plan))
+    assert text.startswith("Applied 4 of 4 operations.")
+    agent, template = draft.find("Support"), draft.find("Format")
+    assert agent["data"]["maxIterations"] == 9 and not agent["data"].get("providerId")
+    # Temporary ids became real ids inside config, and the tool's wrapped node is addressable as $docs.node.
+    assert agent["id"] in template["data"]["template"]
+    assert "$" not in template["data"]["template"]
+    assert not codes(draft.issues(), "error")
+    assert {(draft.alias(e["source"]), draft.alias(e["target"])) for e in draft.edges if is_main(e)} == {
+        ("n1", "n3"), ("n3", "n6"), ("n6", "n2")
+    }
+
+
+def is_main(edge):
+    from app.modules.workflow.builder.validation import is_main_edge
+    return is_main_edge(edge)
+
+
+def test_apply_plan_skips_failed_operations_and_reports_them():
+    from app.modules.workflow.builder.tools import apply_plan
+
+    draft = chatbot()
+    text = apply_plan(draft, [
+        {"op": "add_node", "id": "$x", "node_type": "noSuchNode", "name": "X"},
+        {"op": "connect", "source": "$x", "target": "n3"},
+        {"op": "add_node", "id": "$t", "node_type": "templateNode", "name": "T", "config": {"template": "hi"},
+         "connect_from": "n2", "connect_to": "n3"},
+        {"op": "frobnicate"},
+    ])
+    assert "Applied 1 of 4 operations. 3 failed" in text
+    assert "1. add_node ($x) FAILED: Unknown node type 'noSuchNode'" in text
+    assert "2. connect FAILED: unknown reference $x" in text
+    assert "4. frobnicate FAILED: unknown op" in text
+    assert draft.find("T")["type"] == "templateNode"
+    with pytest.raises(DraftError, match="JSON array"):
+        apply_plan(draft, "{not json")
+    bad_id = apply_plan(draft, [{"op": "add_node", "id": "agent", "node_type": "templateNode", "name": "T"}])
+    assert 'FAILED: id must look like "$name"' in bad_id
+
+
+def test_every_recipe_plan_applies_cleanly():
+    """The recipes are what the builder copies; a recipe that fails to build teaches it a mistake."""
+    from app.modules.workflow.builder.patterns import PATTERNS
+    from app.modules.workflow.builder.tools import apply_plan
+
+    for name, pattern in PATTERNS.items():
+        if not pattern.get("plan"):
+            continue
+        if pattern["base"] == "empty":
+            draft = WorkflowDraft()
+            draft.add_node("chatInputNode", "Start")
+            draft.add_node("chatOutputNode", "Reply")
+        else:
+            draft = WorkflowDraft()  # n1 Start, n2 output, n3 agent: the ids the recipes assume
+            draft.add_node("chatInputNode", "Start")
+            draft.add_node("chatOutputNode", "Reply")
+            draft.add_node("agentNode", "Assistant", system_prompt="Help.", connect_from="n1", connect_to="n2")
+        text = apply_plan(draft, pattern["plan"])
+        assert "FAILED" not in text, f"{name}: {text}"
+        errors = [draft.describe_issue(i) for i in draft.issues() if i.severity == "error"]
+        assert not errors, f"{name}: {errors}"
+        assert "$" not in json.dumps([n["data"] for n in draft.nodes]), f"{name}: unresolved temporary id"
+
+
+def test_recipes_render_as_apply_plan_calls():
+    from app.modules.workflow.builder.patterns import describe
+
+    text = describe("support_assistant")
+    assert "apply_plan(operations=[" in text and '"id": "$agent"' in text
+    assert "Replace every <placeholder>" in text
+    assert "apply_plan" not in describe("agent_prompt")
+
+
+def test_get_workflow_includes_workspace_resources_when_signed_in(monkeypatch):
+    from app.modules.workflow.builder import tools
+
+    store = {}
+
+    async def fake_load(thread_id):
+        return store.get(thread_id)
+
+    async def fake_summary():
+        return "Workspace resources:\n- knowledge bases: Northstar KB [text] id=kb-1"
+
+    monkeypatch.setattr(tools, "load_draft", fake_load)
+    monkeypatch.setattr(tools.resources, "summary", fake_summary)
+    store["anon"] = chatbot()
+    canvas = chatbot().to_canvas()
+    store["canvas"] = WorkflowDraft.from_canvas(canvas["nodes"], canvas["edges"])
+
+    async def scenario():
+        assert "Northstar KB" not in await tools.run_tool("anon", "get_workflow", {})
+        assert "Northstar KB [text] id=kb-1" in await tools.run_tool("canvas", "get_workflow", {})
+
+    asyncio.run(scenario())
+
+
+def test_test_workflow_finalizes_in_the_same_call_when_it_passes(monkeypatch):
+    from app.modules.workflow.builder import tools
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    draft.add_node("templateNode", "Echo", {"template": "You said: {{session.message}}"}, connect_from="n1")
+    draft.add_node("chatOutputNode", "Reply", connect_from="n2")
+    store = {"t": json.dumps(draft.to_dict())}
+
+    async def fake_load(thread_id):
+        return WorkflowDraft.from_dict(json.loads(store[thread_id])) if thread_id in store else None
+
+    async def fake_save(thread_id, draft):
+        store[thread_id] = json.dumps(draft.to_dict())
+
+    monkeypatch.setattr(tools, "load_draft", fake_load)
+    monkeypatch.setattr(tools, "save_draft", fake_save)
+
+    async def scenario():
+        run = lambda tool, **args: tools.run_tool("t", tool, args)
+        text = await run("test_workflow", message="hi", finalize_if_ok="true", summary="Echo bot")
+        assert "You said: hi" in text and "Workflow finalized" in text
+        assert WorkflowDraft.from_dict(json.loads(store["t"])).status == STATUS_READY
+        # A failing run never finalizes.
+        store["t"] = json.dumps(brittle_draft().to_dict())
+        failing = await run("test_workflow", message="Summary: x", finalize_if_ok="true")
+        assert "CODE ERROR" in failing and "Workflow finalized" not in failing
+        assert WorkflowDraft.from_dict(json.loads(store["t"])).status != STATUS_READY
+
+    asyncio.run(scenario())
+
+
+def test_report_quotes_tool_errors_and_states_setup_completeness():
+    """The Northstar run blamed an unselected knowledge base that was in fact selected."""
+    from app.modules.workflow.builder.testing import format_test_result
+
+    draft = chatbot()
+    draft.add_tool("n2", "knowledgeBaseNode", "Search Docs", "Search.", config={"selectedBases": ["kb-1"]})
+    draft.apply_defaults({"providerId": "p1"})
+    agent_id = draft.find("n2")["id"]
+    response = {
+        "output": {"message": "I could not look that up."},
+        "tool_events": [{"agent_id": agent_id, "tool_name": "search_docs", "arguments": {"query": "Basic plan"},
+                         "status": "failed", "error": "Error processing knowledge tool: vector store unavailable",
+                         "result": None}],
+        "state": {"nodeExecutionStatus": {agent_id: {"type": "agentNode", "name": "Assistant", "status": "success",
+                                                      "output": {"message": "I could not look that up."}}}},
+    }
+    text = format_test_result(draft, "What is in the Basic plan?", response)
+    assert 'search_docs({"query": "Basic plan"}) FAILED. The tool\'s own error: "Error processing knowledge tool: vector store unavailable"' in text
+    assert "Report the quoted error to the person as it is" in text
+    assert "Setup: every provider, knowledge base and credential field is filled in" in text
+
+    bare = chatbot()
+    bare.add_tool("n2", "knowledgeBaseNode", "Search Docs", "Search.")
+    assert "Setup still missing on the canvas:" in format_test_result(bare, "x", {"output": {}, "state": {}})
+
+
+def test_prompt_describes_the_four_call_turn():
+    from app.db.seed.knowledge.generate_workflow_builder_workflow import build_system_prompt
+
+    prompt = build_system_prompt()
+    assert "get_workflow, apply_plan, test_workflow with finalize_if_ok, then your reply" in prompt
+    assert "Repeat that error to the person as it is" in prompt
+
+
+# ── Focused AI actions (assist) ───────────────────────────────────────────
+
+
+def test_assist_actions_build_focused_context_and_proposals(monkeypatch):
+    from app.modules.workflow.builder import assist
+
+    asked = []
+
+    async def fake_ask(system, user, provider_id=None):
+        asked.append((system, user))
+        if "Reply with a JSON array of strings only" in user:
+            return '["How much is Pro?", "I want a refund", "What is the weather?"]'
+        if "Reply with a JSON array of" in user:
+            return json.dumps([{"title": "Add a topic gate", "why": "Rule is only in the prompt",
+                                "operations": [{"op": "set_node_field", "node_id": "n2", "field": "maxIterations", "value": "5"}]}])
+        if "Reply with the new prompt only" in user:
+            return "```\nYou are the support assistant of Acme. We help customers...\n```"
+        if "Reply with the code only" in user:
+            return "def executable_function(params):\n    return {\"ok\": True}\n"
+        return "This step answers customer questions."
+
+    monkeypatch.setattr(assist, "_ask", fake_ask)
+    draft = chatbot()
+    draft.add_tool("n2", "knowledgeBaseNode", "Search Docs", "Search the docs.", config={"selectedBases": ["kb"]})
+    draft.add_node("pythonCodeNode", "Count", connect_from="n2")
+    agent_id, code_id = draft.find("n2")["id"], draft.find("Count")["id"]
+
+    async def scenario():
+        text = await assist.run_action(draft, "explain_node", [agent_id])
+        assert text == {"kind": "text", "text": "This step answers customer questions."}
+        assert "n2 agentNode" in asked[-1][1] and "Nodes:" in asked[-1][1]
+
+        prompt = await assist.run_action(draft, "improve_prompt", [agent_id], "make it friendlier")
+        op = prompt["proposals"][0]["operations"][0]
+        assert op == {"op": "set_node_field", "node_id": "n2", "field": "systemPrompt",
+                      "value": "You are the support assistant of Acme. We help customers..."}
+        assert "Search the docs." in asked[-1][1] and "make it friendlier" in asked[-1][1]
+
+        code = await assist.run_action(draft, "generate_code", [code_id], "count the words")
+        assert code["proposals"][0]["operations"][0]["field"] == "code"
+        assert "executable_function" in code["proposals"][0]["operations"][0]["value"]
+
+        tests = await assist.run_action(draft, "suggest_tests", [])
+        assert tests == {"kind": "messages", "messages": ["How much is Pro?", "I want a refund", "What is the weather?"]}
+
+        better = await assist.run_action(draft, "optimize", [])
+        assert better["proposals"][0]["title"] == "Add a topic gate"
+        assert "A step that nothing leads into" not in asked[-1][1]  # focused context, not the builder prompt
+
+        with pytest.raises(ValueError, match="no system prompt"):
+            await assist.run_action(draft, "improve_prompt", [code_id])
+        with pytest.raises(ValueError, match="Unknown action"):
+            await assist.run_action(draft, "dance", [])
+
+    asyncio.run(scenario())
+
+
+def test_generated_code_is_syntax_checked(monkeypatch):
+    from app.modules.workflow.builder import assist
+
+    async def fake_ask(system, user, provider_id=None):
+        return "def executable_function(params):\n    return {"
+
+    monkeypatch.setattr(assist, "_ask", fake_ask)
+    draft = chatbot()
+    draft.add_node("pythonCodeNode", "Count", connect_from="n2")
+    with pytest.raises(DraftError, match="not valid Python"):
+        asyncio.run(assist.run_action(draft, "generate_code", [draft.find("Count")["id"]], "count"))
+
+
+def test_review_finds_prompt_leaks_and_structural_gaps():
+    from app.modules.workflow.builder.assist import review
+
+    draft = chatbot()
+    draft.set_field("n2", "systemPrompt", "If the answer is not in the knowledge base, say so clearly.")
+    draft.add_node("switchNode", "Route", {"switchValue": "{{session.message}}", "cases": [{"label": "a", "value": "a"}]})
+    findings = review(draft)
+    codes_found = {f["code"] for f in findings}
+    assert {"prompt_leak", "thin_prompt", "switch_no_default", "unreachable_node"} <= codes_found
+    leak = next(f for f in findings if f["code"] == "prompt_leak")
+    assert leak["node_id"] == draft.find("n2")["id"] and leak["fix"].startswith("Rewrite the system prompt")
+    assert findings[0]["severity"] == "error"  # errors first
+
+
+def test_proposals_apply_through_apply_plan_on_a_canvas_snapshot():
+    from app.modules.workflow.builder.tools import apply_plan
+
+    canvas = chatbot().to_canvas()
+    draft = WorkflowDraft.from_canvas(canvas["nodes"], canvas["edges"])
+    report = apply_plan(draft, [{"op": "set_node_field", "node_id": "n2", "field": "systemPrompt", "value": "A proper brief."}])
+    assert report.startswith("Applied 1 of 1")
+    payload = draft.client_payload()
+    assert payload["changes"][0]["op"] == "update_node"
+    assert next(n for n in payload["nodes"] if n["type"] == "agentNode")["data"]["systemPrompt"] == "A proper brief."
+
+
+def test_builder_tests_simulate_action_nodes_unless_turned_off():
+    from app.modules.workflow.builder.testing import run_draft_test
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    draft.add_node("slackMessageNode", "Notify", {"message": "New: {{session.message}}", "channel": "#x"}, connect_from="n1")
+    draft.add_node("templateNode", "Done", {"template": "Sent."}, connect_from="n2")
+    draft.add_node("chatOutputNode", "Reply", connect_from="n3")
+
+    text = asyncio.run(run_draft_test(draft, "hello"))
+    assert "Response: Sent." in text
+    assert 'Simulated (nothing was really sent or created): n2 "Notify"' in text
+    assert not draft.find("n2")["data"].get("deactivated")  # the draft itself is untouched
+
+    draft.simulate_actions = False
+    real = asyncio.run(run_draft_test(draft, "hello"))
+    assert "Simulated" not in real
+
+
+def test_dangling_connections_from_the_canvas_are_dropped_not_reported():
+    """A canvas edge to a deleted node left the builder with an error it had no action for."""
+    canvas = chatbot().to_canvas()
+    canvas["edges"].append(make_edge(canvas["nodes"][0]["id"], "ghost-node", "output", "input"))
+    draft = WorkflowDraft.from_canvas(canvas["nodes"], canvas["edges"])
+    assert len(draft.edges) == 2
+    assert "edge_unknown_node" not in codes(draft.issues())
