@@ -2,9 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ArrowUp, Sparkles } from "lucide-react";
 
 import { cn } from "@/helpers/utils";
+import { tokenizeComposerText } from "@/components/assistantComposerTokens";
 
 // The field grows with its content up to this height, then scrolls.
 const MAX_FIELD_HEIGHT_PX = 200;
+// Shared by the textarea and its highlight layer: they must lay out text identically.
+const FIELD_TEXT_CLASSES = "py-1.5 text-sm leading-5 break-words";
 
 export interface ComposerMentionable {
   id: string;
@@ -32,10 +35,10 @@ type AssistantComposerProps = {
   /** Commands offered when the message starts with "/". */
   commands?: ComposerCommand[];
   /**
-   * Called when a mention is picked. Return true to take it (shown as a chip by the
-   * caller); the "@query" text is then removed instead of being replaced by the name.
+   * Called when a mention is picked from the picker. The mention stays in the field
+   * as "@Name" (shown as a badge); the caller may mirror it elsewhere.
    */
-  onMentionPick?: (mention: ComposerMentionable) => boolean;
+  onMentionPick?: (mention: ComposerMentionable) => void | boolean;
 };
 
 interface Picker {
@@ -52,7 +55,9 @@ interface Picker {
  * pane so both compose messages the same way.
  *
  * With `mentionables`, typing "@" opens a picker and the chosen name is inserted as "@Name";
- * with `commands`, a message starting with "/" offers the commands.
+ * with `commands`, a message starting with "/" offers the commands. Both are drawn as
+ * badges inside the field: a highlight layer behind the (transparent) textarea renders
+ * the same text with the tokens tinted, so typing, selection and the caret stay native.
  */
 export function AssistantComposer({
   value,
@@ -67,6 +72,19 @@ export function AssistantComposer({
 }: AssistantComposerProps) {
   const canSend = value.trim().length > 0 && !busy;
   const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
+  const decorated = Boolean(mentionables?.length || commands?.length);
+  const tokens = useMemo(
+    () => (decorated ? tokenizeComposerText(value, mentionables, commands) : []),
+    [decorated, value, mentionables, commands]
+  );
+  const hasBadges = tokens.some((token) => token.kind !== "text");
+  // The highlight layer must scroll with the field once the text overflows.
+  const syncScroll = useCallback(() => {
+    const field = fieldRef.current;
+    const highlight = highlightRef.current;
+    if (field && highlight) highlight.scrollTop = field.scrollTop;
+  }, []);
   const [picker, setPicker] = useState<Picker | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -134,10 +152,10 @@ export function AssistantComposer({
     if (!picker) return;
     const field = fieldRef.current;
     const caret = field?.selectionStart ?? value.length;
-    let insert = picker.kind === "command" ? `${option.label} ` : `@${option.label} `;
+    const insert = picker.kind === "command" ? `${option.label} ` : `@${option.label} `;
     if (picker.kind === "mention" && onMentionPick) {
       const mention = mentionables?.find((m) => m.id === option.key);
-      if (mention && onMentionPick(mention)) insert = "";
+      if (mention) onMentionPick(mention);
     }
     const next = value.slice(0, picker.start) + insert + value.slice(caret);
     onChange(next);
@@ -200,10 +218,46 @@ export function AssistantComposer({
           className="pointer-events-none mb-2 h-4 w-4 shrink-0 text-[hsl(var(--brand-600))]"
           aria-hidden
         />
+        <div className="relative min-w-0 flex-1">
+        {hasBadges && (
+          <div
+            ref={highlightRef}
+            aria-hidden
+            className={cn(FIELD_TEXT_CLASSES, "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground")}
+          >
+            {tokens.map((token, index) =>
+              token.kind === "text" ? (
+                <span key={index}>{token.text}</span>
+              ) : (
+                <span
+                  key={index}
+                  className={cn(
+                    "rounded-md [box-decoration-break:clone] [-webkit-box-decoration-break:clone]",
+                    token.kind === "command"
+                      ? "bg-amber-500/15 text-amber-700 shadow-[0_0_0_2px_rgb(245_158_11/0.15)] dark:text-amber-400"
+                      : "bg-[hsl(var(--brand-600))]/15 text-[hsl(var(--brand-600))] shadow-[0_0_0_2px_hsl(var(--brand-600)/0.15)]"
+                  )}
+                >
+                  {token.kind === "mention" ? (
+                    <>
+                      <span className="opacity-50">@</span>
+                      {token.text.slice(1)}
+                    </>
+                  ) : (
+                    token.text
+                  )}
+                </span>
+              )
+            )}
+            {/* A trailing newline needs a character after it to keep the last line's height. */}
+            {value.endsWith("\n") ? "\u200b" : null}
+          </div>
+        )}
         <textarea
           ref={fieldRef}
           rows={1}
           value={value}
+          onScroll={syncScroll}
           onChange={(event) => {
             onChange(event.target.value);
             setPicker(detectPicker(event.target.value, event.target.selectionStart ?? event.target.value.length));
@@ -239,8 +293,13 @@ export function AssistantComposer({
           placeholder={placeholder}
           disabled={busy}
           aria-label={placeholder}
-          className="min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed"
+          className={cn(
+            FIELD_TEXT_CLASSES,
+            "relative block w-full resize-none bg-transparent placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed",
+            hasBadges && "text-transparent caret-foreground"
+          )}
         />
+        </div>
         <button
           type="button"
           onClick={submit}

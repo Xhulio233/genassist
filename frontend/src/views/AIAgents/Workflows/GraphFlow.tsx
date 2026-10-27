@@ -665,25 +665,28 @@ const GraphFlowContent: React.FC = () => {
 
   // "/explain", "/review", ... from the composer.
   const handleAssistantCommand = useCallback(
-    (command: string, rest: string) => {
-      const focus = selectedExecutableIds;
+    (command: string, rest: string, taggedIds?: string[]) => {
+      // Steps tagged in the message win over the canvas selection; the words after
+      // the command are the instruction ("/optimize by merging the two routers").
+      const focus = taggedIds?.length ? taggedIds : selectedExecutableIds;
+      const instruction = rest.trim() || undefined;
       switch (command) {
         case "explain":
-          if (focus.length === 1) assistant.runAssist("explain_node", focus);
-          else if (focus.length > 1) assistant.runAssist("explain_group", focus);
-          else assistant.runAssist("describe_workflow");
+          if (focus.length === 1) assistant.runAssist("explain_node", focus, instruction);
+          else if (focus.length > 1) assistant.runAssist("explain_group", focus, instruction);
+          else assistant.runAssist("describe_workflow", [], instruction);
           return;
         case "describe":
-          assistant.runAssist("describe_workflow");
+          assistant.runAssist("describe_workflow", [], instruction);
           return;
         case "optimize":
-          assistant.runAssist("optimize", focus);
+          assistant.runAssist("optimize", focus, instruction);
           return;
         case "review":
-          assistant.runAssist("review");
+          assistant.runAssist("review", [], instruction);
           return;
         case "tests":
-          assistant.runAssist("suggest_tests", focus.slice(0, 1));
+          assistant.runAssist("suggest_tests", focus.slice(0, 1), instruction);
           return;
         case "fix":
           assistant.sendMessage(rest || FIX_ISSUES_MESSAGE, focus);

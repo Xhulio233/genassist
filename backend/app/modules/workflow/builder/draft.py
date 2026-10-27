@@ -28,6 +28,7 @@ from app.modules.workflow.builder.validation import (
     invalid_config_keys,
     is_subflow_edge,
     validate_workflow,
+    VARIABLE_ROOTS,
 )
 
 DRAFT_METADATA_KEY = "workflow_builder_draft"
@@ -78,6 +79,63 @@ def make_edge(source: str, target: str, source_handle: str, target_handle: str) 
         "style": dict(EDGE_STYLE),
         "markerEnd": dict(EDGE_MARKER),
     }
+
+
+def _starter_workflow_values() -> Dict[str, Dict[str, Any]]:
+    """
+    Per node type, the data the backend gives a brand-new agent's workflow
+    (app.schemas.workflow.get_base_workflow). Those values are placeholders, not
+    the person's work, even where they differ from the canvas defaults.
+    """
+    try:
+        from app.schemas.workflow import get_base_workflow
+
+        nodes = get_base_workflow("starter").nodes or []
+    except Exception:  # the check must never break a turn
+        return {}
+    values: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        node = node if isinstance(node, dict) else getattr(node, "model_dump", lambda: {})()
+        data = node.get("data") or {}
+        values.setdefault(node.get("type", ""), {}).update(
+            {k: v for k, v in data.items() if k not in catalog.NON_CONFIG_KEYS}
+        )
+    return values
+
+
+_KNOWLEDGE_BASE_ALIASES = (
+    "knowledgeBaseId", "knowledgeBaseIds", "knowledge_base_id", "knowledge_base_ids",
+    "knowledgeBase", "knowledgeBases", "knowledge_bases", "selectedBase", "baseId", "kb_id",
+)
+
+
+def _alias_knowledge_base_fields(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept the obvious names for a knowledge base selection; the node's field is selectedBases."""
+    ids: List[str] = list(config.get("selectedBases") or []) if isinstance(config.get("selectedBases"), list) else (
+        [config["selectedBases"]] if isinstance(config.get("selectedBases"), str) and config["selectedBases"] else []
+    )
+    found = False
+    for alias in _KNOWLEDGE_BASE_ALIASES:
+        if alias not in config:
+            continue
+        found = True
+        value = config.pop(alias)
+        if isinstance(value, list):
+            ids.extend(str(v) for v in value if v)
+        elif value:
+            ids.append(str(value))
+    if found:
+        config["selectedBases"] = list(dict.fromkeys(ids))
+    return config
+
+
+# {{name}} or {{parameters.name}} in a tool's config: the agent means "what I pass in",
+# which the engine knows only as {{source.name}}.
+_VARIABLE_ROOT_NAMES = set(VARIABLE_ROOTS)
+_PARAMETER_PREFIXES = {"parameters", "params", "parameter", "input", "inputs", "args", "arguments", "tool_input"}
+_BARE_PLACEHOLDER = re.compile(
+    r"\{\{\s*(?:(" + "|".join(sorted(_PARAMETER_PREFIXES - _VARIABLE_ROOT_NAMES)) + r")\.)?([A-Za-z_]\w*)\s*\}\}"
+)
 
 
 class WorkflowDraft:
@@ -211,6 +269,7 @@ class WorkflowDraft:
         nodes = [n for n in self.nodes if n.get("type") not in VISUAL_NODE_TYPES]
         if not nodes or len(nodes) > 4:
             return False
+        starter_values = _starter_workflow_values()
         for node in nodes:
             node_type = node.get("type", "")
             if node_type in catalog.ENTRY_NODE_TYPES or node_type in catalog.OUTPUT_NODE_TYPES:
@@ -218,9 +277,12 @@ class WorkflowDraft:
             if not catalog.is_known(node_type):
                 return False
             defaults = catalog.entry(node_type)["defaultData"]
+            placeholder_values = starter_values.get(node_type, {})
             data = node.get("data") or {}
             configured = any(
-                data.get(key) not in (None, "", [], {}) and data.get(key) != defaults.get(key)
+                data.get(key) not in (None, "", [], {})
+                and data.get(key) != defaults.get(key)
+                and data.get(key) != placeholder_values.get(key)
                 for key in data
                 if key not in catalog.NON_CONFIG_KEYS and key not in ("name", "providerId", "deactivated")
             )
@@ -429,12 +491,14 @@ class WorkflowDraft:
 
         config = {k: v for k, v in config.items() if v != SECRET_PLACEHOLDER}
         config.pop("handlers", None)
+        if node_type == "knowledgeBaseNode":
+            config = _alias_knowledge_base_fields(config)
         unknown = invalid_config_keys(node_type, config)
         if unknown:
             allowed = ", ".join(sorted(catalog.allowed_config_keys(node_type) - {"name", "deactivated"}))
             raise DraftError(
                 f"{node_type} has no config field(s) {unknown}. Valid fields: {allowed}. "
-                f"Call get_node_schema(\"{node_type}\") for details."
+                f"Call lookup_node(\"{node_type}\") for details."
             )
         for field in catalog.PLACEHOLDER_FIELDS.get(node_type, []):
             if node_type in ("pythonCodeNode", "dataMapperNode") and field in config:
@@ -932,6 +996,7 @@ class WorkflowDraft:
             parameters = {"query": "What to search for, as a short self-contained question."}
             cleaned.setdefault("query", "{{source.query}}")
 
+        parameters, cleaned, declared = self._declare_bare_placeholders(parameters, cleaned)
         input_schema, forward = self._tool_plumbing(parameters)
 
         before_nodes, before_edges = list(self.nodes), list(self.edges)
@@ -971,7 +1036,51 @@ class WorkflowDraft:
         if parameters:
             refs = ", ".join(f"{{{{source.{p}}}}}" for p in parameters)
             message += f" The agent passes: {', '.join(parameters)}. Read them in {wrapped['alias']}'s config as {refs}."
+        if declared:
+            message += (
+                f" ({', '.join(declared)} were declared from the {{{{...}}}} placeholders in the config and "
+                f"rewritten to {{{{source.…}}}}.)"
+            )
         return {"message": message, "tool": tool["alias"], "node": wrapped["alias"]}
+
+    @staticmethod
+    def _declare_bare_placeholders(
+        parameters: Any, config: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+        """
+        {{city}} in a tool's config can only mean "what the agent passes in": declare
+        it as a tool parameter and read it as {{source.city}}, instead of failing the
+        plan on an unknown variable and spending a model call on the correction.
+        """
+        if isinstance(parameters, str) and parameters.strip():
+            try:
+                parameters = json.loads(parameters)
+            except json.JSONDecodeError as exc:
+                raise DraftError(f"parameters must be a JSON object: {exc}") from exc
+        parameters = dict(parameters or {}) if isinstance(parameters, dict) else parameters
+        names = [
+            name for prefix, name in dict.fromkeys(_BARE_PLACEHOLDER.findall(json.dumps(config)))
+            if prefix or name not in _VARIABLE_ROOT_NAMES
+        ]
+        names = list(dict.fromkeys(names))
+        if not names or not isinstance(parameters, dict):
+            return parameters, config, []
+        declared = [n for n in names if n not in parameters]
+        for name in declared:
+            parameters[name] = {"description": f"The {name.replace('_', ' ')}."}
+
+        def rewrite(value: Any) -> Any:
+            if isinstance(value, str):
+                return _BARE_PLACEHOLDER.sub(
+                    lambda m: f"{{{{source.{m.group(2)}}}}}" if m.group(2) in names else m.group(0), value
+                )
+            if isinstance(value, dict):
+                return {k: rewrite(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [rewrite(v) for v in value]
+            return value
+
+        return parameters, rewrite(config), declared
 
     def finalize(self, summary: str = "") -> Dict[str, Any]:
         errors = blocking(self.new_issues()) if self.origin == ORIGIN_CANVAS else blocking(self.issues())

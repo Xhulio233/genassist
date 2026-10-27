@@ -1409,3 +1409,131 @@ def test_dangling_connections_from_the_canvas_are_dropped_not_reported():
     draft = WorkflowDraft.from_canvas(canvas["nodes"], canvas["edges"])
     assert len(draft.edges) == 2
     assert "edge_unknown_node" not in codes(draft.issues())
+
+
+def test_search_web_tool_returns_compact_results(monkeypatch):
+    """The builder's web search is a handful of title/link/snippet lines, never the node's full envelope."""
+    from app.core.utils import web_search_guard, web_search_utils
+    from app.modules.workflow.builder import tools
+
+    captured = {}
+
+    async def fake_search(query, *, max_results, **_):
+        captured["query"], captured["max_results"] = query, max_results
+        return [
+            web_search_utils.SearchResult("Acme pricing", "https://acme.test/pricing", "Plans   from  $9 " + "x" * 400, "acme.test", 1),
+            web_search_utils.SearchResult("Acme docs", "https://acme.test/docs", "", "acme.test", 2),
+        ]
+
+    async def allow(_tenant):
+        return True
+
+    monkeypatch.setattr(web_search_utils, "search_web", fake_search)
+    monkeypatch.setattr(web_search_guard, "check_enabled", lambda: True)
+    monkeypatch.setattr(web_search_guard, "check_tenant_rate", allow)
+
+    result = asyncio.run(tools.run_tool("t", "search_web", {"query": "  acme pricing "}))
+    assert captured == {"query": "acme pricing", "max_results": tools.SEARCH_RESULTS}
+    assert result.startswith("1. Acme pricing\n   https://acme.test/pricing\n   Plans from $9")
+    assert "…" in result and len(result) < 600  # whitespace collapsed, snippet truncated
+    assert result.endswith("2. Acme docs\n   https://acme.test/docs")
+    assert "search_web" in tools.TOOL_NAMES and "search_web" in tools._READ_ONLY
+
+
+def test_search_web_tool_respects_guards_and_never_raises(monkeypatch):
+    from app.core.utils import web_search_guard, web_search_utils
+    from app.modules.workflow.builder import tools
+
+    async def allow(_tenant):
+        return True
+
+    async def deny(_tenant):
+        return False
+
+    async def boom(query, **_):
+        raise web_search_utils.WebSearchError("Search query exceeds 400 characters", category="invalid_config")
+
+    async def network_down(query, **_):
+        raise RuntimeError("connect to https://duckduckgo.com failed")
+
+    async def nothing(query, **_):
+        return []
+
+    monkeypatch.setattr(web_search_guard, "check_tenant_rate", allow)
+    monkeypatch.setattr(web_search_guard, "check_enabled", lambda: False)
+    assert "disabled" in asyncio.run(tools.run_tool("t", "search_web", {"query": "x"}))
+
+    monkeypatch.setattr(web_search_guard, "check_enabled", lambda: True)
+    monkeypatch.setattr(web_search_guard, "check_tenant_rate", deny)
+    assert "rate limit" in asyncio.run(tools.run_tool("t", "search_web", {"query": "x"}))
+
+    monkeypatch.setattr(web_search_guard, "check_tenant_rate", allow)
+    assert asyncio.run(tools.run_tool("t", "search_web", {})) == "query is required."
+
+    monkeypatch.setattr(web_search_utils, "search_web", boom)
+    out = asyncio.run(tools.run_tool("t", "search_web", {"query": "x"}))
+    assert out.startswith("Web search failed: Search query exceeds 400 characters") and "Do not retry" in out
+
+    monkeypatch.setattr(web_search_utils, "search_web", network_down)
+    out = asyncio.run(tools.run_tool("t", "search_web", {"query": "x"}))
+    assert "unavailable" in out and "duckduckgo" not in out
+
+    monkeypatch.setattr(web_search_utils, "search_web", nothing)
+    assert 'No results for "x"' in asyncio.run(tools.run_tool("t", "search_web", {"query": "x"}))
+
+
+def test_backend_starter_workflow_is_recognised_and_cleared():
+    """A brand-new agent's canvas (Start -> Text Template -> Finish, from the backend default) is a starter."""
+    from app.schemas.workflow import get_base_workflow
+
+    base = get_base_workflow("My Agent")
+    draft = WorkflowDraft.from_canvas(base.nodes, base.edges)
+    assert draft.starter_cleared is True
+    assert sorted(draft.aliases.values()) == ["n1", "n2"]
+    # The first thing the builder does on a starter canvas must just work.
+    draft.add_node("agentNode", "Coordinator Agent", None, "n1", "n2", "You coordinate.")
+    assert not [i for i in draft.issues() if i.severity == "error"]
+
+    # The same template, edited by the person, is their work and is kept.
+    edited = json.loads(json.dumps(base.nodes))
+    next(n for n in edited if n["type"] == "templateNode")["data"]["template"] = "Reply in French: {{source.message}}"
+    kept = WorkflowDraft.from_canvas(edited, base.edges)
+    assert kept.starter_cleared is False and len(kept.aliases) == 3
+
+
+def test_knowledge_base_id_aliases_become_selected_bases():
+    draft = chatbot()
+    draft.add_tool("n2", "knowledgeBaseNode", "Docs", "Search the docs.", config={"knowledgeBaseId": "kb-1"})
+    kb = next(n for n in draft.nodes if n["type"] == "knowledgeBaseNode")
+    assert kb["data"]["selectedBases"] == ["kb-1"]
+    draft.add_tool("n2", "knowledgeBaseNode", "More", "More docs.", config={"knowledge_bases": ["a", "b"], "selectedBases": ["a"]})
+    kb2 = [n for n in draft.nodes if n["type"] == "knowledgeBaseNode"][-1]
+    assert kb2["data"]["selectedBases"] == ["a", "b"]
+    with pytest.raises(DraftError, match="lookup_node"):
+        draft.add_tool("n2", "knowledgeBaseNode", "Bad", "x", config={"collection": "y"})
+
+
+def test_bare_placeholders_in_a_tool_config_become_declared_parameters():
+    """The agent wrote {{city_name}} in an API tool's settings: that is a tool parameter, not an unknown variable."""
+    draft = chatbot()
+    result = draft.add_tool(
+        "n2", "apiToolNode", "Geocode", "Resolve a city to coordinates.",
+        config={"endpoint": "https://geo.test/search", "method": "GET", "parameters": {"name": "{{city_name}}", "count": "1"}},
+    )
+    tool = next(n for n in draft.nodes if n["type"] == "toolBuilderNode")
+    api = next(n for n in draft.nodes if n["type"] == "apiToolNode")
+    assert api["data"]["parameters"] == {"name": "{{source.city_name}}", "count": "1"}
+    assert list(tool["data"]["inputSchema"]) == ["city_name"]
+    assert "city_name" in result["message"] and "declared" in result["message"]
+    assert not [i for i in draft.issues() if i.code == "unknown_variable"]
+
+    # Declared parameters and proper variables are left alone.
+    draft.add_tool(
+        "n2", "apiToolNode", "Weather", "Current weather.",
+        config={"endpoint": "https://w.test", "parameters": {"lat": "{{latitude}}", "lon": "{{parameters.longitude}}", "msg": "{{source.message}}"}},
+        parameters={"latitude": "Latitude."},
+    )
+    api2 = [n for n in draft.nodes if n["type"] == "apiToolNode"][-1]
+    assert api2["data"]["parameters"] == {"lat": "{{source.latitude}}", "lon": "{{source.longitude}}", "msg": "{{source.message}}"}
+    tool2 = [n for n in draft.nodes if n["type"] == "toolBuilderNode"][-1]
+    assert list(tool2["data"]["inputSchema"]) == ["latitude", "longitude"]

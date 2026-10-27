@@ -28,6 +28,7 @@ import {
 import { Checkbox } from "@/components/checkbox";
 import FormattedText from "@/components/FormattedText";
 import { AssistantComposer } from "@/components/AssistantComposer";
+import { mentionedIds, removeMention } from "@/components/assistantComposerTokens";
 import { AssistantEmptyState } from "@/components/AssistantEmptyState";
 import { Button } from "@/components/button";
 import { Badge } from "@/components/badge";
@@ -93,7 +94,7 @@ interface NodePanelProps {
   activeConversationalTab?: boolean;
   onSendMessage?: (message: string, focusNodeIds?: string[]) => void;
   /** "/explain", "/review", ... typed in the composer. */
-  onCommand?: (command: string, rest: string) => void;
+  onCommand?: (command: string, rest: string, nodeIds?: string[]) => void;
   /** Nodes the person can @-mention. */
   mentionables?: ComposerMentionable[];
   pendingChange?: PendingChange | null;
@@ -237,17 +238,23 @@ const NodePanel: React.FC<NodePanelProps> = ({
   // The composer owns the trimming, the Enter key and clearing the field.
   // "/command rest" goes to the command handler; "@Name" mentions become the focus of the message.
   const handleSend = (message: string, focusNodeIds?: string[]) => {
+    const chips = focusChips.map((m) => m.id);
+    const tagged = focusNodeIds ?? [...chips, ...mentionedIds(message, mentionables).filter((id) => !chips.includes(id))];
     const command = parseSlashCommand(message);
     if (command && onCommand) {
-      onCommand(command.command, command.rest);
+      setFocusChips([]);
+      onCommand(command.command, command.rest, tagged);
       return;
     }
-    const mentioned = mentionables
-      .filter((m) => new RegExp(`@${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(message))
-      .map((m) => m.id);
-    const chips = focusChips.map((m) => m.id);
     setFocusChips([]);
-    onSendMessage?.(message, focusNodeIds ?? [...chips, ...mentioned.filter((id) => !chips.includes(id))]);
+    onSendMessage?.(message, tagged);
+  };
+
+  // Removing a chip also takes its "@Name" out of the field, so the two never disagree.
+  const removeFocusChip = (id: string) => {
+    const chip = focusChips.find((c) => c.id === id);
+    setFocusChips((prev) => prev.filter((c) => c.id !== id));
+    if (chip) setInputMessage((prev) => removeMention(prev, chip.name));
   };
 
   // Handle drag start
@@ -779,7 +786,7 @@ const NodePanel: React.FC<NodePanelProps> = ({
                           key={chip.id}
                           node={{ id: chip.id, name: chip.name, type: chip.hint }}
                           onClick={focusCanvasNode}
-                          onRemove={(id) => setFocusChips((prev) => prev.filter((c) => c.id !== id))}
+                          onRemove={removeFocusChip}
                         />
                       ))}
                       {focusChips.length === 0 && selectedNode && (
@@ -800,7 +807,6 @@ const NodePanel: React.FC<NodePanelProps> = ({
                     commands={SLASH_COMMANDS}
                     onMentionPick={(mention) => {
                       setFocusChips((prev) => (prev.some((c) => c.id === mention.id) ? prev : [...prev, mention]));
-                      return true;
                     }}
                   />
                   {onSimulateActionsChange && (

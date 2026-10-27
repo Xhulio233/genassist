@@ -166,7 +166,7 @@ PATTERNS: Dict[str, Dict[str, Any]] = {
                         "form_fields": [{"name": "email", "label": "Email", "type": "text", "required": True}]},
              "connect_from": "n3", "connect_to": OUTPUT},
         ],
-        "notes": "Call get_node_schema(\"humanInTheLoopNode\") for the field types.",
+        "notes": "Call lookup_node(\"humanInTheLoopNode\") for the field types.",
     },
     "sub_agents": {
         "summary": "A lead agent that delegates specialised tasks to focused sub-agents.",

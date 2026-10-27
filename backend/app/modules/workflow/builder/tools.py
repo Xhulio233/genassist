@@ -79,6 +79,15 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "parameters": {"kind": _param("string", "knowledge_bases, integrations or data_sources.")},
     },
     {
+        "name": "search_web",
+        "description": (
+            "Search the web for facts you do not have: a business's products, policies or tone for an agent "
+            "brief, an external API's endpoints and fields for an API step, a service's rules. Returns a few "
+            "results with title, link and snippet. Not for GenAssist node names or settings (use lookup_node)."
+        ),
+        "parameters": {"query": _param("string", "A short, specific search query.")},
+    },
+    {
         "name": "apply_plan",
         "description": (
             "Apply a JSON array of operations in order; failures are reported and skipped. New nodes get a "
@@ -132,7 +141,7 @@ TOOL_NAMES = [tool["name"] for tool in TOOL_DEFINITIONS]
 # Tools that only read; they never create a draft or bump its revision.
 _READ_ONLY = {
     "get_workflow", "get_node", "lookup_node", "get_pattern", "test_workflow", "list_resources",
-    "get_last_test_run",
+    "get_last_test_run", "search_web",
 }
 
 
@@ -146,6 +155,44 @@ def _lookup_node(query: str) -> str:
         return f"No node type matches '{query}'. Node types:\n{catalog.compact_index()}"
     listing = "\n".join(f"- {m['type']} ({m['label']}): {m['description']}" for m in matches)
     return f"Matches:\n{listing}\n\nDetails of {matches[0]['type']}:\n{catalog.node_schema_text(matches[0]['type'])}"
+
+
+# Results handed to the builder are deliberately small: a handful of snippets is
+# enough to write a brief or find an endpoint, and every character comes back on
+# each later model call of the turn.
+SEARCH_RESULTS = 5
+SEARCH_SNIPPET_CHARS = 240
+
+
+async def _search_web(query: str) -> str:
+    """Compact web search for the builder; same kill switch and tenant rate limit as the Web Search node."""
+    from app.core.tenant_scope import get_tenant_context
+    from app.core.utils.web_search_guard import check_enabled, check_tenant_rate
+    from app.core.utils.web_search_utils import WebSearchError, _sanitize_error, search_web
+
+    query = (query or "").strip()
+    if not query:
+        return "query is required."
+    if not check_enabled():
+        return "Web search is disabled by the administrator. Build with what the person told you, and ask them for anything you still need."
+    if not await check_tenant_rate(get_tenant_context()):
+        return "Web search rate limit reached for now. Build with what you know, and ask the person for anything you still need."
+    try:
+        results = await search_web(query, max_results=SEARCH_RESULTS)
+    except WebSearchError as exc:
+        return f"Web search failed: {exc}. Do not retry the same query; build with what you know and ask the person if needed."
+    except Exception as exc:  # provider or network trouble: never a crash for the agent
+        logger.warning("builder web search failed: %s", _sanitize_error(exc))
+        return "Web search is unavailable right now. Do not retry; build with what you know and ask the person if needed."
+    if not results:
+        return f'No results for "{query}". Try different words once, or ask the person.'
+    lines = []
+    for result in results[:SEARCH_RESULTS]:
+        snippet = " ".join(str(result.snippet or "").split())
+        if len(snippet) > SEARCH_SNIPPET_CHARS:
+            snippet = snippet[: SEARCH_SNIPPET_CHARS - 1].rstrip() + "…"
+        lines.append(f"{result.position}. {result.title}\n   {result.url}" + (f"\n   {snippet}" if snippet else ""))
+    return "\n".join(lines)
 
 
 _TEMP_ID = re.compile(r"\$[A-Za-z_]\w*(?:\.node)?")
@@ -318,6 +365,9 @@ async def run_tool(
         return _lookup_node(str(args.get("query") or args.get("node_type") or ""))
     if name == "get_pattern":
         return patterns.describe(args.get("name"))
+
+    if name == "search_web":
+        return await _search_web(str(args.get("query") or ""))
 
     if name == "list_resources":
         draft = await load_draft(thread_id)

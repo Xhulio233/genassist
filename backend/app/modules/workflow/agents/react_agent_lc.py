@@ -130,9 +130,26 @@ class ReActAgentLC(BaseToolAgent):
 
         return lc_tools
 
+    @staticmethod
+    def _as_text(value: Any) -> Any:
+        """
+        Accept a JSON object or array where the schema says string.
+
+        Models regularly send a real array or object for a parameter described as
+        "a JSON array" or "JSON text"; rejecting the call for that teaches them
+        nothing and wastes a turn. The tool gets the same JSON it would have parsed.
+        """
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return value
+
     def _create_tool_schema(self, tool: BaseTool):
         """Create a Pydantic schema for the tool parameters"""
-        from pydantic import Field, create_model
+        from typing import Annotated
+
+        from pydantic import BeforeValidator, Field, create_model
 
         # If the tool has parameters, create a dynamic Pydantic model
         if hasattr(tool, "parameters") and tool.parameters:
@@ -148,7 +165,7 @@ class ReActAgentLC(BaseToolAgent):
 
                 # Map parameter types to Python types
                 if param_type == "string":
-                    field_type = str
+                    field_type = Annotated[str, BeforeValidator(self._as_text)]
                 elif param_type == "integer":
                     field_type = int
                 elif param_type == "number":

@@ -340,3 +340,30 @@ class TestBlockSystemPromptReachesTheModel:
         await agent.invoke("hi")
 
         assert inner.seen[-1][0].content == _STABLE + _SUFFIX
+
+
+def test_tool_schema_accepts_json_values_where_a_string_is_declared():
+    """gpt-4o sends a real array for a parameter described as "a JSON array"; the tool gets it as text."""
+    agent = _build_agent()
+    tool = BaseTool(
+        node_id="t",
+        name="apply_plan",
+        description="d",
+        parameters={
+            "operations": {"type": "string", "description": "JSON array", "required": True},
+            "note": {"type": "string", "description": "optional", "required": False},
+            "count": {"type": "integer", "description": "n", "required": False},
+        },
+        function=lambda _input: "ok",
+    )
+    schema = agent._create_tool_schema(tool)
+
+    parsed = schema(operations=[{"op": "add_node", "config": {"a": 1}}])
+    assert json.loads(parsed.operations) == [{"op": "add_node", "config": {"a": 1}}]
+    assert schema(operations={"op": "x"}).operations == '{"op": "x"}'
+    assert schema(operations="[]").operations == "[]"
+    assert schema(operations=5).operations == "5"
+    assert schema(operations="[]", note=None).note is None
+    assert schema(operations="[]", count=3).count == 3
+    with pytest.raises(Exception):
+        schema(note="x")  # required parameter still required
