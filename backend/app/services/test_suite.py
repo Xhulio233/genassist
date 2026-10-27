@@ -3,8 +3,10 @@ import dataclasses
 import logging
 import json
 import math
+import re
+import time
 from functools import partial
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import UUID, uuid4
 
 from injector import inject
@@ -27,23 +29,36 @@ from app.services.evaluation_text import (
     reply_text as _reply_text,
 )
 from app.services.route_action_rules import action_observations, route_observations
+from app.services.run_conversations import (
+    CONVERSATIONS_KEY,
+    StoredResult,
+    as_text,
+    build_run_outcome,
+    message_of,
+    reply_of,
+    turn_reason,
+)
+from app.services.method_checks import converted_evaluation, needs_conversion
 from app.services.scenario_checks import (
     CHECKS_TECHNIQUE,
     UNREADABLE_TURN,
     JudgeRequest,
     JudgeVerdict,
     TurnRecord,
+    check_paths,
     conversation_verdicts,
     describe_check,
     grade_checks,
-    judge_expectation,
+    grader_name,
+    judge_prompt,
     judge_requests,
+    material_text,
     parse_checks_config,
+    read_path,
     resolve_targets,
     run_judge,
     skip_reason,
     tool_calls_from_events,
-    transcript as _transcript,
 )
 from app.services.dataset_file import (
     FILE_STATUS_FAILED,
@@ -91,7 +106,14 @@ from app.schemas.test_suite import (
     ImportCasesFromConversationsResult,
     ImportCasesFromFilesResult,
     ImportedConversationResult,
+    ConversationCounts,
+    ChecksPreviewRequest,
+    ChecksPreviewResult,
     PaginatedEvaluations,
+    RunConversationResult,
+    RunConversations,
+    RunTurnResult,
+    RunTurnTrace,
     StartedEvaluationRun,
     TestCase,
     TestCaseCreate,
@@ -193,9 +215,16 @@ CHECKS_EVALUATION_TIMEOUT_SECONDS = 15 * 60
 CHECK_JUDGE_TIMEOUT_SECONDS = 90
 # AI grading stops here, so the other checks are still stored within the budget above.
 CHECKS_JUDGE_BUDGET_SECONDS = 12 * 60
+# The run task stops here (test_suite_tasks); grading and storing must end before it.
+RUN_TIME_LIMIT_SECONDS = 2 * 60 * 60
+RUN_FINISH_SECONDS = 5 * 60
+# A run with more to grade by AI gets this much more per grading, up to the cap.
+CHECK_JUDGE_SECONDS_EACH = 2
+CHECKS_JUDGE_BUDGET_CAP_SECONDS = 60 * 60
 # The texts of a check's row and snapshot, which can quote a hidden value.
-_CHECK_RESULT_TEXTS = ("expected", "observed", "comment")
-_CHECK_RULE_TEXTS = ("text", "rubric", "value", "args", "turn_message")
+_CHECK_RESULT_TEXTS = ("expected", "observed", "comment", "facts", "checked_facts")
+_CHECK_RULE_TEXTS = ("text", "rubric", "value", "args", "turn_message", "result_contains")
+_TOOL_REF_TEXTS = ("args", "result_contains")
 
 # Metering runs outside the scoring budget; one hung flush must not stall a long run.
 EVALUATION_USAGE_FLUSH_TIMEOUT_SECONDS = 30
@@ -208,6 +237,78 @@ class ResultStatus:
     EXECUTION_FAILED = "execution_failed"
     SCORING_FAILED = "scoring_failed"
     SKIPPED = "skipped"
+
+
+def _checks_judge_budget(
+    technique_configs: Dict[str, Any] | None,
+    turns: int,
+    conversations: int,
+    seconds_left: float = RUN_TIME_LIMIT_SECONDS,
+) -> float:
+    """Seconds the checks' AI grader gets: the usual budget, more for much to grade, less near the run's limit."""
+    try:
+        checks = parse_checks_config((technique_configs or {}).get(CHECKS_TECHNIQUE)).checks
+    except ValueError:
+        checks = []
+    gradings = sum(
+        1 if check.level == "turn" else turns if check.per_turn else conversations
+        for check in checks
+        if check.scored
+    )
+    wanted = max(CHECKS_JUDGE_BUDGET_SECONDS, min(gradings * CHECK_JUDGE_SECONDS_EACH, CHECKS_JUDGE_BUDGET_CAP_SECONDS))
+    # Never past the run's limit, keeping the checks' margin and time to store the results; less than usual if need be.
+    room = seconds_left - (CHECKS_EVALUATION_TIMEOUT_SECONDS - CHECKS_JUDGE_BUDGET_SECONDS) - RUN_FINISH_SECONDS
+    return max(0.0, min(wanted, room))
+
+
+def turn_record(
+    case: Any,
+    trace: Dict[str, Any] | None,
+    inputs: Dict[str, Any],
+    raw_arguments: Dict[str, Any],
+    paths: Iterable[str],
+    *,
+    crashed: bool = False,
+    error: str | None = None,
+    waiting_for_human: bool = False,
+    grading_context: Dict[str, Any] | None = None,
+) -> TurnRecord:
+    """What one turn did, as the checks read it, from what the older methods graded."""
+    context = grading_context if grading_context is not None else _build_grading_context(trace or {})
+    output = None if crashed else (trace or {}).get("output")
+    errors = context.get("errors") or []
+    # Read as Field Equals read a field: from the turn's inputs, output, expected reply and trace.
+    payload = {"inputs": inputs, "outputs": output, "reference_outputs": case.expected_output, "trace": context}
+    return TurnRecord(
+        case_id=str(case.id),
+        conversation_key=str(case.source_conversation_id or case.id),
+        turn_index=case.turn_index,
+        position=0,
+        message=_normalize_text((case.input_data or {}).get("message")),
+        crashed=crashed,
+        error=error,
+        waiting_for_human=waiting_for_human,
+        # Read as Exact Match and Contains read them, so a check grades the same text.
+        reply="" if crashed else _reply_text(output),
+        output=output,
+        expected=_normalize_text(case.expected_output),
+        expected_value=case.expected_output,
+        passages=_serialize_judge_source(context.get("retrievals")),
+        step_errors=_step_errors_text(errors, context.get("nodes") or {}) if errors else "",
+        tool_text=_serialize_judge_source(context.get("tool_events")),
+        session_text=_serialize_judge_source(context.get("session")),
+        values={path: read_path(payload, path) for path in paths},
+        tool_calls=tool_calls_from_events((trace or {}).get("tool_events"), raw_arguments),
+        steps=action_observations(context),
+        routes=route_observations(context),
+        state=dict((trace or {}).get("stateful_values") or {}),
+    )
+
+
+def _graded_by_methods(run: Any) -> bool:
+    """Whether a run graded its turns with any older method, beside or instead of checks."""
+    techniques = list(getattr(run, "techniques", None) or [])
+    return not techniques or any(technique != CHECKS_TECHNIQUE for technique in techniques)
 
 
 def _failure_reason(state: Any) -> str:
@@ -641,6 +742,45 @@ def _describe_run_error(entry: Any, nodes: Dict[str, Any]) -> str:
         source = "workflow"
         message = _shorten(entry, 120)
     return f"'{source}' — {message}" if message else f"'{source}'"
+
+
+# A failed step comes twice: "Node <id>: ..." in the run's errors, "Error executing node <id>: ..." in its own.
+_RUN_ERROR_NODE = re.compile(r"^Node (?P<node>[^:\s]+): ")
+_STEP_ERROR_PREFIX = re.compile(r"^Error executing node [^:\s]+: ")
+
+
+def _step_failure(entry: Any, nodes: Dict[str, Any]) -> Tuple[Optional[str], str]:
+    """The step that failed (None for the workflow itself) and why, with node ids swapped for labels."""
+    node_id: Optional[str] = None
+    if isinstance(entry, dict) and "node" in entry:
+        node_id, text = entry.get("node"), str(entry.get("error") or "")
+    elif isinstance(entry, dict) and "message" in entry:
+        text = str(entry.get("message") or "")
+        found = _RUN_ERROR_NODE.match(text)
+        if found and found.group("node") in nodes:
+            node_id, text = found.group("node"), text[found.end():]
+    else:
+        text = str(entry)
+    text = _STEP_ERROR_PREFIX.sub("", text, count=1)
+    for other_id, node in nodes.items():
+        if other_id in text and node.get("label"):
+            text = text.replace(other_id, node["label"])
+    node = nodes.get(node_id) or {}
+    label = (node.get("label") or node.get("type") or "unknown step") if node_id else None
+    return label, _shorten(text.strip().rstrip("."), 120)
+
+
+def _step_errors_text(errors: List[Any], nodes: Dict[str, Any], max_entries: int = 3) -> str:
+    """What went wrong in a turn's steps, as a check reports it: each failure once, each step by name."""
+    failures = list(dict.fromkeys(_step_failure(entry, nodes) for entry in errors))
+    sentences = []
+    for label, message in failures[:max_entries]:
+        who = f'The step "{label}"' if label else "The workflow"
+        ending = "" if message.endswith("...") else "."
+        sentences.append(f"{who} failed: {message}{ending}" if message else f"{who} failed.")
+    if len(failures) > max_entries:
+        sentences.append(f"And {len(failures) - max_entries} more.")
+    return " ".join(sentences)
 
 
 def _summarize_run_errors(errors: List[Any], nodes: Dict[str, Any], max_entries: int = 3) -> str:
@@ -1422,7 +1562,10 @@ class SimpleEvaluatorRegistry:
                 "not_evaluated": True,
                 "comment": "Not evaluated: no answer or evidence source to compare.",
             }
+        return await self.nli_result(answer, evidence, config)
 
+    async def nli_result(self, answer: str, evidence: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """NLI's grading of an answer against its evidence; the checks that stick to a source with it share this."""
         # Transformer inference is blocking CPU work. Keep it off the event loop,
         # but give NLI its own deadline so one slow model becomes a readable metric
         # error and does not discard the other evaluation results for this case.
@@ -1588,23 +1731,29 @@ class SimpleEvaluatorRegistry:
             or config.get("provenance_mode") == "llm"
         )
 
-        if use_llm_judge:
-            score, reason = await self._run_provenance_judge(
-                answer=answer,
-                context=context_text,
-                provider_id=config.get("llm_provider_id"),
-                system_prompt_suffix=config.get("llm_judge_system_prompt_suffix") or "",
-                usage_ref=payload.get("_usage_ref"),
-                call_index=payload.get("_technique_index"),
-            )
-            if score is None:
-                raise RuntimeError("Provenance LLM judge did not return a score.")
-        else:
+        if not use_llm_judge:
             # Embeddings are the default; mode-less legacy configs grade the same
             # way rather than with the removed word-overlap heuristic.
-            score = await self._embedding_provenance_score(answer, context_text, config)
-            reason = "Embedding similarity score"
+            return await self.similarity_result(answer, context_text, config)
+        score, reason = await self._run_provenance_judge(
+            answer=answer,
+            context=context_text,
+            provider_id=config.get("llm_provider_id"),
+            system_prompt_suffix=config.get("llm_judge_system_prompt_suffix") or "",
+            usage_ref=payload.get("_usage_ref"),
+            call_index=payload.get("_technique_index"),
+        )
+        if score is None:
+            raise RuntimeError("Provenance LLM judge did not return a score.")
+        return self._provenance_result(score, reason, config)
 
+    async def similarity_result(self, answer: str, context: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Provenance's embedding grading of an answer against its context; the checks share this."""
+        score = await self._embedding_provenance_score(answer, context, config)
+        return self._provenance_result(score, "Embedding similarity score", config)
+
+    @staticmethod
+    def _provenance_result(score: float, reason: str | None, config: Dict[str, Any]) -> Dict[str, Any]:
         min_score = float(config.get("min_score", 0.5))
         if not 0.0 <= min_score <= 1.0:
             raise ValueError("Provenance threshold must be between 0 and 1.")
@@ -2014,7 +2163,9 @@ class TestSuiteService:
     # ---- Suites -----------------------------------------------------------
 
     async def create_suite(self, data: TestSuiteCreate) -> TestSuiteInDB:
-        orm = TestSuiteModel(**data.model_dump())
+        payload = data.model_dump()
+        payload["category"] = await self._known_category(payload.get("category"))
+        orm = TestSuiteModel(**payload)
         created = await self.suite_repo.create(orm)
         return TestSuiteInDB.model_validate(created, from_attributes=True)
 
@@ -2034,10 +2185,33 @@ class TestSuiteService:
             raise AppException(status_code=404, error_key=ErrorKey.NOT_FOUND)
 
         payload = data.model_dump(exclude_unset=True)
+        if "category" in payload:
+            # As for evaluations: "" clears it, null leaves it.
+            if payload["category"] is None:
+                del payload["category"]
+            else:
+                payload["category"] = await self._known_category(payload["category"]) or None
         for key, value in payload.items():
             setattr(suite, key, value)
         updated = await self.suite_repo.update(suite)
         return TestSuiteInDB.model_validate(updated, from_attributes=True)
+
+    # ---- Categories -------------------------------------------------------
+
+    async def list_categories(self) -> List[str]:
+        """The categories datasets and evaluations use, each once, in alphabetical order."""
+        names = sorted(await self.evaluation_repo.categories(), key=lambda name: (name.casefold(), name))
+        # Spellings that differ only in case, as two saves at once can leave, show once.
+        unique: Dict[str, str] = {}
+        for name in names:
+            unique.setdefault(name.lower(), name)
+        return list(unique.values())
+
+    async def _known_category(self, category: Optional[str]) -> Optional[str]:
+        """The spelling already in use for this category, whatever its case; empty stays empty."""
+        if not category:
+            return category
+        return await self.evaluation_repo.category_spelling(category) or category
 
     async def delete_suite(self, suite_id: UUID) -> None:
         suite = await self.suite_repo.get_by_id(suite_id)
@@ -2576,6 +2750,8 @@ class TestSuiteService:
         run_input_metadata: Dict[str, Any] | None = None,
         technique_configs: Dict[str, Dict[str, Any]] | None = None,
     ) -> None:
+        # The run's time limit counts from here.
+        started = time.monotonic()
         # Mark running
         run.status = "running"
         await self.run_repo.update(run)
@@ -2609,11 +2785,22 @@ class TestSuiteService:
 
         per_case_metrics: List[Dict[str, Any]] = []
         status_counts: Dict[str, int] = {}
+        # Each stored turn's status and metrics, so the run can count its conversations at the end.
+        stored_turns: Dict[str, StoredResult] = {}
         case_events: Dict[str, List[Dict[str, Any]]] = {}
         case_executed_agents: Dict[str, set] = {}
         case_routes: Dict[str, List[Dict[str, Any]]] = {}
         case_actions: Dict[str, List[Dict[str, Any]]] = {}
         checks_requested = CHECKS_TECHNIQUE in rule_keys
+        # The dotted paths the checks read, taken from each turn while its trace is at hand.
+        try:
+            paths_for_checks = (
+                check_paths(parse_checks_config((technique_configs or {}).get(CHECKS_TECHNIQUE)).checks)
+                if checks_requested
+                else []
+            )
+        except ValueError:
+            paths_for_checks = []
         case_turns: Dict[str, TurnRecord] = {}
         case_value_maps: Dict[str, Dict[str, str]] = {}
         provider_name_cache: Dict[str, Tuple[str, str]] = {}
@@ -2642,7 +2829,25 @@ class TestSuiteService:
             if not checks_requested:
                 return
             try:
-                context = grading_context if grading_context is not None else _build_grading_context(trace or {})
+                case_turns[str(case.id)] = turn_record(
+                    case,
+                    trace,
+                    inputs,
+                    raw_arguments,
+                    paths_for_checks,
+                    crashed=crashed,
+                    error=error,
+                    waiting_for_human=waiting_for_human,
+                    grading_context=grading_context,
+                )
+                case_value_maps[str(case.id)] = _hidden_value_map(hidden_keys, trace, inputs)
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not keep evaluation case %s for its checks", case.id, exc_info=True)
+                remember_unreadable(case, crashed=crashed, error=error)
+
+        def remember_unreadable(case: TestCaseInDB, *, crashed: bool = False, error: str | None = None) -> None:
+            """A turn that ran but whose trace could not be read is not checked, and says why; a crash still fails."""
+            if checks_requested and str(case.id) not in case_turns:
                 case_turns[str(case.id)] = TurnRecord(
                     case_id=str(case.id),
                     conversation_key=str(case.source_conversation_id or case.id),
@@ -2651,27 +2856,6 @@ class TestSuiteService:
                     message=_normalize_text((case.input_data or {}).get("message")),
                     crashed=crashed,
                     error=error,
-                    waiting_for_human=waiting_for_human,
-                    reply="" if crashed else _reply_text((trace or {}).get("output")),
-                    tool_calls=tool_calls_from_events((trace or {}).get("tool_events"), raw_arguments),
-                    steps=action_observations(context),
-                    routes=route_observations(context),
-                    state=dict((trace or {}).get("stateful_values") or {}),
-                )
-                case_value_maps[str(case.id)] = _hidden_value_map(hidden_keys, trace, inputs)
-            except Exception:  # pylint: disable=broad-except
-                logger.warning("Could not keep evaluation case %s for its checks", case.id, exc_info=True)
-                remember_unreadable(case)
-
-        def remember_unreadable(case: TestCaseInDB) -> None:
-            """A turn that ran but whose trace could not be read is not checked, and says why."""
-            if checks_requested and str(case.id) not in case_turns:
-                case_turns[str(case.id)] = TurnRecord(
-                    case_id=str(case.id),
-                    conversation_key=str(case.source_conversation_id or case.id),
-                    turn_index=case.turn_index,
-                    position=0,
-                    message=_normalize_text((case.input_data or {}).get("message")),
                     ran=False,
                     skip_reason=UNREADABLE_TURN,
                 )
@@ -2684,6 +2868,7 @@ class TestSuiteService:
             inputs: Dict[str, Any] | None = None,
         ) -> None:
             status_counts[status] = status_counts.get(status, 0) + 1
+            stored_turns[str(case.id)] = StoredResult(case_id=case.id, status=status)
             value_map = _hidden_value_map(hidden_keys, execution_trace, inputs or {})
             # The last-resort write for a turn, so a trace that cannot be stored is dropped, not raised.
             try:
@@ -2893,6 +3078,9 @@ class TestSuiteService:
                 )
                 await self.result_repo.create(result)
                 per_case_metrics.append(metrics)
+                stored_turns[str(case.id)] = StoredResult(
+                    case_id=case.id, status=ResultStatus.SCORED, metrics=metrics
+                )
                 status_counts[ResultStatus.SCORED] = (
                     status_counts.get(ResultStatus.SCORED, 0) + 1
                 )
@@ -3057,8 +3245,12 @@ class TestSuiteService:
                 case_value_maps=case_value_maps,
                 provider_name_cache=provider_name_cache,
                 metering_state=metering_state,
+                started=started,
             )
         )
+        conversation_counts = await self._conversation_counts(run, cases, stored_turns)
+        if conversation_counts is not None:
+            summary[CONVERSATIONS_KEY] = conversation_counts
 
         # Metrics above cover scored cases only. A case can run yet fail scoring, so
         # "executed" and "scored" are counted separately rather than merged.
@@ -3094,6 +3286,7 @@ class TestSuiteService:
         case_value_maps: Dict[str, Dict[str, str]] | None = None,
         provider_name_cache: Dict[str, Tuple[str, str]] | None = None,
         metering_state: Dict[str, Any] | None = None,
+        started: float | None = None,
     ) -> Dict[str, Any]:
         """Grade each requested rule-based technique across its scopes, persist the
         per-rule results, and return their summaries.
@@ -3101,6 +3294,9 @@ class TestSuiteService:
         Every technique is bounded and isolated: a bug or a stuck DB call in one
         must not leave the whole run stuck in "running", nor drop the others.
         """
+        def seconds_left() -> float:
+            return RUN_TIME_LIMIT_SECONDS - (time.monotonic() - started if started is not None else 0.0)
+
         graders: Dict[str, Callable[[], Any]] = {
             TOOL_USED_TECHNIQUE: lambda: self._evaluate_tool_usage(
                 run=run,
@@ -3129,7 +3325,10 @@ class TestSuiteService:
                 workflow=workflow,
                 observations_by_turn=case_actions,
             ),
-            CHECKS_TECHNIQUE: lambda: self._evaluate_checks(
+        }
+
+        def grade_checks(judge_budget: float) -> Any:
+            return self._evaluate_checks(
                 run=run,
                 conversations=conversations,
                 cases=cases,
@@ -3139,8 +3338,8 @@ class TestSuiteService:
                 case_value_maps=case_value_maps or {},
                 provider_name_cache=provider_name_cache if provider_name_cache is not None else {},
                 metering_state=metering_state if metering_state is not None else {"timed_out": False},
-            ),
-        }
+                judge_budget=judge_budget,
+            )
 
         summaries: Dict[str, Any] = {}
         for technique in RULE_ROW_TECHNIQUES:
@@ -3148,12 +3347,19 @@ class TestSuiteService:
                 continue
             label = _RULE_TECHNIQUE_LABELS[technique]
             try:
-                timeout = (
-                    CHECKS_EVALUATION_TIMEOUT_SECONDS
-                    if technique == CHECKS_TECHNIQUE
-                    else RULE_EVALUATION_TIMEOUT_SECONDS
-                )
-                summary = await asyncio.wait_for(graders[technique](), timeout=timeout)
+                if technique == CHECKS_TECHNIQUE:
+                    # Measured now, so the time the techniques before them took is left out.
+                    judge_budget = _checks_judge_budget(
+                        technique_configs, len(cases), len(conversations), seconds_left()
+                    )
+                    # The checks keep their usual margin over however long their AI grading may take.
+                    timeout = judge_budget + CHECKS_EVALUATION_TIMEOUT_SECONDS - CHECKS_JUDGE_BUDGET_SECONDS
+                    grading = grade_checks(judge_budget)
+                else:
+                    timeout, grading = RULE_EVALUATION_TIMEOUT_SECONDS, graders[technique]()
+                # Never past the run's limit either, so the run still stores its results.
+                timeout = max(0.0, min(timeout, seconds_left() - RUN_FINISH_SECONDS))
+                summary = await asyncio.wait_for(grading, timeout=timeout)
                 if summary is not None:
                     summaries[technique] = summary
             except Exception as exc:  # pylint: disable=broad-except
@@ -3358,6 +3564,7 @@ class TestSuiteService:
         case_value_maps: Dict[str, Dict[str, str]],
         provider_name_cache: Dict[str, Tuple[str, str]],
         metering_state: Dict[str, Any],
+        judge_budget: float = CHECKS_JUDGE_BUDGET_SECONDS,
     ) -> Dict[str, Any] | None:
         """Grade the Should / Should not checks over every conversation and store one row each."""
         from app.services.rule_scopes import summarize_planned_results
@@ -3407,6 +3614,7 @@ class TestSuiteService:
                 workflow=workflow,
                 provider_name_cache=provider_name_cache,
                 metering_state=metering_state,
+                budget_seconds=judge_budget,
             )
             if requests
             else {}
@@ -3436,8 +3644,11 @@ class TestSuiteService:
 
         def check_details(entry: Dict[str, Any]) -> Dict[str, Any]:
             check = check_by_id[entry["rule_id"]]
+            rule = masked(check.model_dump(mode="json"), _CHECK_RULE_TEXTS)
+            # Each other tool's values and result text too.
+            rule["tools"] = [masked(ref, _TOOL_REF_TEXTS) for ref in rule.get("tools") or []]
             return {
-                "rule": masked(check.model_dump(mode="json"), _CHECK_RULE_TEXTS),
+                "rule": rule,
                 "rule_summary": mask_hidden_values(describe_check(check), value_map) if value_map else describe_check(check),
             }
 
@@ -3471,14 +3682,16 @@ class TestSuiteService:
         workflow: WorkflowInDB,
         provider_name_cache: Dict[str, Tuple[str, str]],
         metering_state: Dict[str, Any],
+        budget_seconds: float = CHECKS_JUDGE_BUDGET_SECONDS,
     ) -> Dict[Any, JudgeVerdict]:
-        """AI-grade the checks that need it, sharing one model and metering the calls."""
-        try:
-            model = await injector.get(LLMProvider).get_model(provider_id)
-        except Exception:  # pylint: disable=broad-except
-            logger.warning("Could not load the judge model for the checks of run %s", run.id, exc_info=True)
-            failed = JudgeVerdict(error=True, reason="The AI grader could not be reached.")
-            return {request.key: failed for request in requests}
+        """Grade the checks that need a score: by AI, one model per grader and metered, or as NLI and Provenance did."""
+        models: Dict[Any, Any] = {}
+        unreachable = JudgeVerdict(error=True, reason="The AI grader could not be reached.")
+        for grader in {request.check.llm_provider_id or provider_id for request in requests if request.check.ai_graded}:
+            try:
+                models[grader] = await injector.get(LLMProvider).get_model(grader)
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not load the judge model %s for the checks of run %s", grader, run.id, exc_info=True)
 
         usage_ref = EvaluationUsageRef(
             execution_id=f"eval-checks:{run.id}",
@@ -3488,39 +3701,22 @@ class TestSuiteService:
         call_indexes = iter(range(len(requests)))
 
         async def judge(request: JudgeRequest) -> JudgeVerdict:
-            whole = not request.check.per_turn
-            expectation = judge_expectation(request.check, whole)
-            if whole:
-                system_prompt = (
-                    "You grade a whole conversation between a user and an AI assistant against a "
-                    "single expectation. CONVERSATION lists every turn in order.\n\n"
-                    f"EXPECTATION:\n{expectation}\n\n"
-                )
-                user_content = f"CONVERSATION:\n{_transcript(request.turns)}"
-            else:
-                turn = request.turns[0]
-                system_prompt = (
-                    "You grade one reply from an AI assistant against a single expectation. "
-                    "QUESTION is what the user said and ANSWER is the reply to grade.\n\n"
-                    f"EXPECTATION:\n{expectation}\n\n"
-                )
-                user_content = f"QUESTION:\n{turn.message}\n\nANSWER:\n{turn.reply}"
-            system_prompt += (
-                "Judge only this expectation. Score 1.0 when it is fully met, 0.0 when it clearly "
-                "is not, and in between only for partial compliance.\n\n"
-                "Return ONLY a compact JSON object in this exact format:\n"
-                '{"score": 0.0-1.0, "reason": "short explanation"}\n'
-                "Do not include any extra text or explanation."
-            )
+            if not request.check.ai_graded:
+                return await self._grade_locally(request)
+            # A check can name its own grader; the evaluation's grades the rest.
+            grader = request.check.llm_provider_id or provider_id
+            if grader not in models:
+                return unreachable
+            system_prompt, user_content = judge_prompt(request)
             score, reason = await asyncio.wait_for(
                 self.evaluators._invoke_json_judge(
                     system_prompt=system_prompt,
                     user_content=user_content,
-                    provider_id=provider_id,
+                    provider_id=grader,
                     usage_ref=usage_ref,
                     purpose="checks_judge",
                     call_index=next(call_indexes),
-                    model=model,
+                    model=models[grader],
                 ),
                 timeout=CHECK_JUDGE_TIMEOUT_SECONDS,
             )
@@ -3529,9 +3725,35 @@ class TestSuiteService:
             return JudgeVerdict(score=score, reason=reason)
 
         try:
-            return await run_judge(requests, judge, budget_seconds=CHECKS_JUDGE_BUDGET_SECONDS)
+            return await run_judge(requests, judge, budget_seconds=budget_seconds)
         finally:
             await self._flush_judge_usage(usage_ref, provider_name_cache, metering_state)
+
+    async def _grade_locally(self, request: JudgeRequest) -> JudgeVerdict:
+        """A reply against its source as NLI or Provenance's embeddings graded it, with their own rules."""
+        check, turn = request.check, request.turns[0]
+        name = grader_name(check)
+        config: Dict[str, Any]
+        try:
+            if check.grader == "nli":
+                config = {"min_entail_score": check.passes_at, "fail_on_contradiction": check.fail_on_contradiction}
+                if check.nli_model:
+                    config["nli_model_name"] = check.nli_model
+                result = await self.evaluators.nli_result(turn.reply, material_text(check, turn), config)
+            else:
+                config = {"min_score": check.passes_at, **{f"embedding_{key}": value for key, value in check.embedding.items()}}
+                result = await self.evaluators.similarity_result(turn.reply, material_text(check, turn), config)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("%s could not grade check %s", name, check.id, exc_info=True)
+            return JudgeVerdict(error=True, reason=f"{name} could not grade this reply.")
+        reason = _normalize_text(result.get("comment")) or None
+        if result.get("not_evaluated"):
+            return JudgeVerdict(skipped=reason or f"{name} could not grade this reply.")
+        if result.get("error"):
+            return JudgeVerdict(error=True, reason=reason or f"{name} could not grade this reply.")
+        held = bool(result.get("passed"))
+        # A Should not holds when the reply does not stick to its source.
+        return JudgeVerdict(score=result.get("score"), reason=reason, passed=held if check.expect == "should" else not held)
 
     async def _persist_rule_results(
         self,
@@ -3682,6 +3904,72 @@ class TestSuiteService:
         rows = await self.tool_rule_result_repo.get_all_for_run(run_id)
         return [TestToolRuleResult.model_validate(r, from_attributes=True) for r in rows]
 
+    async def _conversation_counts(
+        self, run: TestRunModel, cases: List[TestCaseInDB], stored: Dict[str, StoredResult]
+    ) -> Optional[Dict[str, int]]:
+        """How many conversations passed, failed or were not evaluated, kept so lists need no results."""
+        try:
+            rules = await self.tool_rule_result_repo.get_all_for_run(run.id)
+            ran = [case for case in cases if str(case.id) in stored]
+            return build_run_outcome(ran, list(stored.values()), rules, _graded_by_methods(run)).counts()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not count the conversations of run %s", run.id, exc_info=True)
+            return None
+
+    async def get_run_conversations(self, run_id: UUID) -> RunConversations:
+        run = await self.run_repo.get_by_id(run_id)
+        if not run:
+            raise AppException(status_code=404, error_key=ErrorKey.NOT_FOUND)
+        results = await self.result_repo.get_outcomes_for_run(run_id)
+        rules = await self.tool_rule_result_repo.get_all_for_run(run_id)
+        # Turns removed from the dataset since the run still show with what they did.
+        case_ids = {result.case_id for result in results} | {rule.case_id for rule in rules if rule.case_id}
+        cases = await self.case_repo.get_cases_by_ids(run.suite_id, list(case_ids), include_deleted=True)
+        outcome = build_run_outcome(cases, results, rules, _graded_by_methods(run))
+
+        def rule_out(rule: Any) -> TestToolRuleResult:
+            return TestToolRuleResult.model_validate(rule, from_attributes=True)
+
+        def turn_out(turn: Any) -> RunTurnResult:
+            result = turn.result
+            return RunTurnResult(
+                case_id=turn.case.id,
+                number=turn.number,
+                message=message_of(turn.case, result.trace_input if result is not None else None),
+                expected=as_text(turn.case.expected_output),
+                reply=reply_of(result.actual_output) if result is not None else None,
+                verdict=turn.verdict,
+                reason=turn_reason(turn),
+                status=result.status if result is not None else None,
+                metrics=(result.metrics or {}) if result is not None else {},
+                rules=[rule_out(rule) for rule in turn.rules],
+                has_trace=bool(result is not None and result.has_trace and result.status != ResultStatus.SKIPPED),
+                in_dataset=not turn.case.is_deleted,
+            )
+
+        return RunConversations(
+            run_id=run.id,
+            counts=ConversationCounts(**outcome.counts()),
+            conversations=[
+                RunConversationResult(
+                    key=conversation.key,
+                    verdict=conversation.verdict,
+                    turns=[turn_out(turn) for turn in conversation.turns],
+                    rules=[rule_out(rule) for rule in conversation.rules],
+                )
+                for conversation in outcome.conversations
+            ],
+            other_rules=[rule_out(rule) for rule in outcome.unplaced],
+            # Rule rows are written when the run ends, so until it completes its verdicts can change.
+            rules_pending=run.status != "completed" and any(t in RULE_ROW_TECHNIQUES for t in run.techniques or []),
+        )
+
+    async def get_run_turn_trace(self, run_id: UUID, case_id: UUID) -> RunTurnTrace:
+        if not await self.run_repo.get_by_id(run_id):
+            raise AppException(status_code=404, error_key=ErrorKey.NOT_FOUND)
+        trace = await self.result_repo.get_trace(run_id, case_id)
+        return RunTurnTrace(execution_trace=trace if isinstance(trace, dict) else None)
+
     # ---- Evaluations -------------------------------------------------------
 
     async def _effective_workflow_id(self, workflow_id: Any, suite_id: Any) -> Any:
@@ -3798,6 +4086,7 @@ class TestSuiteService:
         self._require_techniques(data.techniques, data.technique_configs)
         payload = data.model_dump()
         payload["run_ids"] = []
+        payload["category"] = await self._known_category(payload.get("category"))
         workflow_id = await self._effective_workflow_id(
             payload.get("workflow_id"), payload.get("suite_id")
         )
@@ -3825,6 +4114,9 @@ class TestSuiteService:
         if not row:
             raise AppException(status_code=404, error_key=ErrorKey.NOT_FOUND)
         updates = data.model_dump(exclude_none=True)
+        if "category" in updates:
+            # "" clears it, since a null is left out of the update.
+            updates["category"] = await self._known_category(updates["category"]) or None
         techniques = updates.get("techniques", row.techniques)
         # An older evaluation saved with no methods keeps running the defaults when only its configs change.
         if "techniques" in updates or ("technique_configs" in updates and techniques):
@@ -3843,6 +4135,42 @@ class TestSuiteService:
             setattr(row, field, value)
         updated = await self.evaluation_repo.update(row)
         return TestEvaluationInDB.model_validate(updated, from_attributes=True)
+
+    async def _checks_for_older_methods(
+        self, row: TestEvaluationModel, catalogs: Dict[str, Any]
+    ) -> Optional[Tuple[List[str], Dict[str, Any]]]:
+        """The evaluation's older methods as checks, or None when it has none or they cannot be read."""
+        if not needs_conversion(row.techniques):
+            return None
+        workflow_id = await self._effective_workflow_id(row.workflow_id, row.suite_id)
+        key = str(workflow_id or "")
+        if key not in catalogs:
+            catalogs[key] = None
+            if workflow_id:
+                try:
+                    catalogs[key] = await self._walk_workflow_catalog(workflow_id)
+                except Exception:  # pylint: disable=broad-except
+                    logger.warning("Could not load the catalog of workflow %s", workflow_id, exc_info=True)
+        try:
+            techniques, configs, _ = converted_evaluation(row.techniques, row.technique_configs, catalogs[key])
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not read the older methods of evaluation %s as checks", row.id, exc_info=True)
+            return None
+        return techniques, configs
+
+    async def preview_checks(self, data: ChecksPreviewRequest) -> ChecksPreviewResult:
+        """Each evaluation's older methods as checks, not saved; saving it in the editor keeps them."""
+        catalogs: Dict[str, Any] = {}
+        previews: List[TestEvaluation] = []
+        for evaluation_id in dict.fromkeys(data.evaluation_ids):
+            row = await self.evaluation_repo.get_by_id(evaluation_id)
+            converted = await self._checks_for_older_methods(row, catalogs) if row else None
+            if converted:
+                evaluation = TestEvaluation.model_validate(row, from_attributes=True)
+                previews.append(
+                    evaluation.model_copy(update={"techniques": converted[0], "technique_configs": converted[1]})
+                )
+        return ChecksPreviewResult(evaluations=previews)
 
     async def append_run_to_evaluation(
         self, evaluation_id: UUID, run_id: str
@@ -3871,6 +4199,7 @@ class TestSuiteService:
             [TestRunInDB, Optional[Dict[str, Any]], Optional[Dict[str, Any]]], None
         ],
         target_workflow_id: Optional[UUID] = None,
+        category: Optional[str] = None,
     ) -> List[StartedEvaluationRun]:
         """Queue and dispatch a run for every evaluation targeting this workflow.
 
@@ -3881,12 +4210,13 @@ class TestSuiteService:
 
         ``target_workflow_id`` runs every evaluation against that version
         instead of its own; it must be a version of ``workflow_id``.
+        ``category`` ("" = none set) starts only the evaluations in it, as the lists filter them.
         """
         if target_workflow_id:
             await self._ensure_version_of_same_workflow(
                 workflow_id, target_workflow_id
             )
-        targeted = await self._evaluations_for_workflow(workflow_id)
+        targeted = await self._evaluations_for_workflow(workflow_id, category)
 
         # Every evaluation in this scope shares ``workflow_id`` as its effective
         # workflow, so the active version is the same for all of them: resolve it
@@ -3897,10 +4227,14 @@ class TestSuiteService:
                 workflow_id
             )
 
+        # Each workflow's names are read once for the batch, for converting older methods.
+        catalogs: Dict[str, Any] = {}
         results: List[StartedEvaluationRun] = []
         for ev in targeted:
             try:
-                run = await self._start_evaluation_run(ev, dispatch, batch_target)
+                run = await self._start_evaluation_run(
+                    ev, dispatch, batch_target, catalogs=catalogs
+                )
                 results.append(
                     StartedEvaluationRun(
                         evaluation_id=ev.id,
@@ -3975,10 +4309,14 @@ class TestSuiteService:
             )
 
     async def _evaluations_for_workflow(
-        self, workflow_id: UUID
+        self, workflow_id: UUID, category: Optional[str] = None
     ) -> List[TestEvaluationModel]:
-        """The Run all scope: every evaluation for the workflow (DB-filtered)."""
-        return await self.evaluation_repo.get_all_for_workflow(workflow_id)
+        """The Run all scope: every evaluation for the workflow, or in one category (DB-filtered)."""
+        return await self.evaluation_repo.get_all_for_workflow(workflow_id, category=category)
+
+    async def evaluation_ids_in_category(self, category: str) -> Set[UUID]:
+        """Evaluations in this category ("" = none set), as the lists filter them."""
+        return await self.evaluation_repo.ids_in_category(category)
 
     async def _walk_workflow_catalog(self, workflow_id: Any) -> Dict[str, List[Dict[str, Any]]]:
         """One cycle-safe walk of a workflow (+ nested) collecting agents, routers and nodes.
@@ -4042,11 +4380,14 @@ class TestSuiteService:
         )
 
     async def get_workflow_evaluation_summaries(
-        self,
+        self, search: Optional[str] = None, category: Optional[str] = None
     ) -> List[WorkflowEvaluationSummary]:
-        """One row per workflow (and the unassigned bucket): count, health, running."""
-        count_rows = await self.evaluation_repo.count_by_effective_workflow()
-        pointers = await self.evaluation_repo.get_latest_run_pointers()
+        """One row per workflow (and the unassigned bucket): count, health, running.
+
+        A search or category ("" = none set) keeps the workflows with evaluations it matches, summarising only those.
+        """
+        count_rows = await self.evaluation_repo.count_by_effective_workflow(search, category)
+        pointers = await self.evaluation_repo.get_latest_run_pointers(search, category)
         stats_by_workflow = await self._compute_workflow_stats(pointers)
         summaries: List[WorkflowEvaluationSummary] = []
         for workflow_id, count in count_rows:
@@ -4152,22 +4493,23 @@ class TestSuiteService:
         page: int,
         page_size: int,
         search: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> PaginatedEvaluations:
         """One page of a workflow's evaluations (``workflow_id=None`` = unassigned).
 
-        Filtering, search and pagination run in the database, so only the
-        requested page is loaded.
+        Filtering, search, category ("" = none set) and pagination run in the
+        database, so only the requested page is loaded.
         """
         page = max(page, 1)
         page_size = max(1, min(page_size, 100))
         offset = (page - 1) * page_size
         rows = await self.evaluation_repo.get_page_for_workflow(
-            workflow_id, offset, page_size, search
+            workflow_id, offset, page_size, search, category
         )
-        total = await self.evaluation_repo.count_for_workflow(workflow_id, search)
+        total = await self.evaluation_repo.count_for_workflow(workflow_id, search, category)
         total_unfiltered = (
             total
-            if not (search and search.strip())
+            if not (search and search.strip()) and category is None
             else await self.evaluation_repo.count_for_workflow(workflow_id, None)
         )
         any_running = await self.workflow_has_active_run(workflow_id)
@@ -4190,6 +4532,8 @@ class TestSuiteService:
             [TestRunInDB, Optional[Dict[str, Any]], Optional[Dict[str, Any]]], None
         ],
         target_workflow_id: Optional[UUID] = None,
+        *,
+        catalogs: Optional[Dict[str, Any]] = None,
     ) -> TestRunInDB:
         """Create, record and dispatch a single evaluation run.
 
@@ -4210,16 +4554,22 @@ class TestSuiteService:
             raise AppException(
                 status_code=400, error_key=ErrorKey.EVALUATION_WORKFLOW_REQUIRED
             )
+        techniques, technique_configs = list(ev.techniques or []), ev.technique_configs or None
+        # Older methods run as the checks they read as; the evaluation keeps them until saved.
+        if needs_conversion(techniques):
+            converted = await self._checks_for_older_methods(ev, catalogs if catalogs is not None else {})
+            if converted:
+                techniques, technique_configs = converted
         data = TestRunCreate(
-            techniques=list(ev.techniques or []),
-            technique_configs=ev.technique_configs or None,
+            techniques=techniques,
+            technique_configs=technique_configs,
             workflow_id=resolved_workflow_id,
             input_metadata=input_metadata or None,
         )
         run = await self.create_run(ev.suite_id, data)
         try:
             await self.append_run_to_evaluation(ev.id, str(run.id))
-            dispatch(run, input_metadata or None, ev.technique_configs or None)
+            dispatch(run, input_metadata or None, technique_configs)
         except Exception:
             await self._mark_run_failed_to_start(run.id)
             raise
