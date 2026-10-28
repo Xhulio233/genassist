@@ -16,6 +16,7 @@ import re
 
 from app.modules.workflow.builder import catalog, patterns, resources
 from app.modules.workflow.builder.draft import DraftError, WorkflowDraft, load_draft, save_draft
+from app.modules.workflow.builder.narration import StepNarrator
 from app.modules.workflow.builder.resources import describe_resources
 from app.modules.workflow.builder.testing import (
     error_signature,
@@ -133,6 +134,19 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "name": "finalize_workflow",
         "description": "Validate and mark the workflow done, when a passing test already exists. Fails with the errors to fix.",
         "parameters": {"summary": _param("string", "One sentence on what was built or changed.", required=False)},
+    },
+    {
+        "name": "ask_user",
+        "description": (
+            "Ask the person one question when the answer changes what you build and cannot be assumed. "
+            "The options are shown to them as buttons (plus a box to type their own answer). After calling "
+            "it, end your turn: reply with the question in one sentence and do not list the options."
+        ),
+        "parameters": {
+            "question": _param("string", "The question, one sentence, in plain words."),
+            "options": _param("string", "JSON array of 2 to 4 short answers, e.g. [\"Email the customer\", \"Open a ticket\"]."),
+            "recommended": _param("string", "The option you would pick, copied exactly.", required=False),
+        },
     },
 ]
 
@@ -356,10 +370,29 @@ async def run_tool(
     Execute one builder tool for a conversation and return its text result.
 
     ``usage_sink`` collects the LLM usage of a test run, so it is accounted to
-    the builder conversation that asked for it.
+    the builder conversation that asked for it. On a streamed chat turn the call
+    is narrated as one step ("Adding 3 steps"), so the person sees the work.
     """
     args = {k: v for k, v in (args or {}).items() if v is not None}
+    narrator = StepNarrator(name, args)
+    if not narrator.needs_node_name:
+        narrator.start()
+    try:
+        result = await _run_tool(thread_id, name, args, usage_sink, narrator)
+    except Exception:
+        narrator.fail()
+        raise
+    narrator.end(result)
+    return result
 
+
+async def _run_tool(
+    thread_id: str,
+    name: str,
+    args: Dict[str, Any],
+    usage_sink: Optional[list],
+    narrator: StepNarrator,
+) -> str:
     # Catalog lookups do not touch the draft.
     if name == "lookup_node":
         return _lookup_node(str(args.get("query") or args.get("node_type") or ""))
@@ -440,8 +473,21 @@ async def run_tool(
                 outline = f"{outline}\n{listing}"
         return outline
 
+    if name == "ask_user":
+        async with _lock_for(thread_id):
+            draft = await load_draft(thread_id) or WorkflowDraft()
+            try:
+                result = draft.ask(args.get("question"), args.get("options"), args.get("recommended"))
+            except DraftError as exc:
+                return f"ERROR: {exc}"
+            # The question rides on the draft without counting as a change to the workflow.
+            await save_draft(thread_id, draft)
+            return result
+
     async with _lock_for(thread_id):
         draft = await load_draft(thread_id) or WorkflowDraft()
+        if narrator.needs_node_name:
+            narrator.start(_node_name(draft, args.get("node_id")))
         try:
             result = _apply(draft, name, args)
         except DraftError as exc:
@@ -451,6 +497,14 @@ async def run_tool(
             if name != "finalize_workflow":
                 result = f"{result}\n{draft.open_problems()}"
         return result
+
+
+def _node_name(draft: WorkflowDraft, ref: Any) -> Optional[str]:
+    try:
+        name = (draft.find(ref).get("data") or {}).get("name")
+    except DraftError:
+        return None
+    return str(name) if name else None
 
 
 def make_executor(

@@ -27,6 +27,7 @@ import { Workflow } from "@/interfaces/workflow.interface";
 import WorkflowTestPanel, { TestRunRecord } from "./components/WorkflowTestPanel";
 import WorkflowEvaluationsTab from "./components/WorkflowEvaluationsTab";
 import NodePanel, { NODE_PANEL_DEFAULT_WIDTH_PX } from "./components/panels/NodePanel";
+import { AssistantPanel, ASSISTANT_PANEL_DEFAULT_WIDTH_PX } from "./components/panels/AssistantPanel";
 import BottomPanel from "./components/panels/BottomPanel";
 import WorkflowsSavedPanel from "./components/panels/WorkflowsSavedPanel";
 import { useCanvasAssistant } from "./hooks/useCanvasAssistant";
@@ -60,6 +61,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSidebar } from "@/components/sidebar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/tabs";
 import { History, X, Plus, Workflow as WorkflowIcon, Play, ClipboardCheck } from "lucide-react";
+import { GenAssistMark } from "@/components/AssistantEmptyState";
+import { NavBadge } from "@/layout/app-sidebar";
 import CanvasContextMenu from "./components/CanvasContextMenu";
 import CustomControls from "./components/CustomControls";
 import { computeAutoArrangeLayout } from "./utils/autoArrangeLayout";
@@ -174,8 +177,6 @@ const GraphFlowContent: React.FC = () => {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const [showNodePanel, setShowNodePanel] = useState(false);
-  const [nodePanelWidth, setNodePanelWidth] = useState(NODE_PANEL_DEFAULT_WIDTH_PX);
-  const [isResizingNodePanel, setIsResizingNodePanel] = useState(false);
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false);
   // When set, the Available Nodes sidebar is in "replace" mode: picking a node
   // there swaps this node instead of adding a new one.
@@ -523,8 +524,47 @@ const GraphFlowContent: React.FC = () => {
   );
 
   // Canvas AI assistant
-  const [conversationalTabActive, setConversationalTabActive] = useState(false);
-  const [hasStartedConversation, setHasStartedConversation] = useState(false);
+  // The AI assistant has its own panel beside the canvas; the canvas makes room for it.
+  const assistantEnabled = useFeatureFlagVisible(FeatureFlags.WORKFLOW.CONVERSATIONAL_TAB);
+  const [showAssistant, setShowAssistant] = useState(false);
+  const [assistantWidth, setAssistantWidth] = useState(ASSISTANT_PANEL_DEFAULT_WIDTH_PX);
+  const [isResizingAssistant, setIsResizingAssistant] = useState(false);
+  const assistantOffset = showAssistant && assistantEnabled ? assistantWidth : 0;
+  // Opening, closing or resizing the panel changes the canvas column's width. The
+  // canvas itself is pushed aside by moving the viewport by exactly the width the
+  // column lost or gained, measured on the element as it changes, so nodes follow
+  // the panel frame by frame whatever animates it. Culling is paused meanwhile:
+  // React Flow measures a frame late, and culled nodes would blink out.
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [assistantTransitioning, setAssistantTransitioning] = useState(false);
+  const assistantTransitioningRef = useRef(false);
+  const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    assistantTransitioningRef.current = true;
+    setAssistantTransitioning(true);
+    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+    if (isResizingAssistant) return;
+    transitionTimerRef.current = setTimeout(() => {
+      assistantTransitioningRef.current = false;
+      setAssistantTransitioning(false);
+    }, 400);
+  }, [assistantOffset, isResizingAssistant]);
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    let lastWidth: number | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width !== "number") return;
+      const previous = lastWidth;
+      lastWidth = width;
+      if (previous === null || width === previous || !assistantTransitioningRef.current || !reactFlowInstance) return;
+      const viewport = reactFlowInstance.getViewport();
+      reactFlowInstance.setViewport({ ...viewport, x: viewport.x + (width - previous) }, { duration: 0 });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [reactFlowInstance]);
   // Restore functions to nodes after loading
   const restoreNodeFunctions = useCallback(
     (loadedNodes: Node[]): Node[] => {
@@ -570,9 +610,7 @@ const GraphFlowContent: React.FC = () => {
   });
 
   const openAssistantPanel = useCallback(() => {
-    setHasStartedConversation(true);
-    setShowNodePanel(true);
-    setConversationalTabActive(true);
+    setShowAssistant(true);
   }, []);
 
   // Centre the canvas on a node and, when asked, open its settings dialog (the
@@ -614,6 +652,15 @@ const GraphFlowContent: React.FC = () => {
       assistant.sendMessage(`Fix the step "${nodeName(id)}": ${problem}. Fill it in sensibly, test, and finish.`, [id]);
     },
     [assistant, nodeName, openAssistantPanel]
+  );
+
+  // "Add a step with AI" on an output handle: one sentence, one connected step.
+  const addStepWithAi = useCallback(
+    (nodeId: string, handleId: string, handleLabel: string, instruction: string) => {
+      openAssistantPanel();
+      void assistant.addStepWithAi(nodeId, handleId, handleLabel, instruction);
+    },
+    [assistant, openAssistantPanel]
   );
 
   const assistGroup = useCallback(
@@ -1397,6 +1444,7 @@ const GraphFlowContent: React.FC = () => {
       assistNode,
       fixNodeWithAi,
       assistGroup,
+      addStepWithAi,
     }),
     [
       duplicateNode,
@@ -1411,6 +1459,7 @@ const GraphFlowContent: React.FC = () => {
       assistNode,
       fixNodeWithAi,
       assistGroup,
+      addStepWithAi,
     ]
   );
 
@@ -1756,9 +1805,7 @@ const GraphFlowContent: React.FC = () => {
       const text = message.trim();
       if (!text) return;
       assistant.sendMessage(text);
-      setHasStartedConversation(true);
-      setShowNodePanel(true);
-      setConversationalTabActive(true);
+      setShowAssistant(true);
       closeNodeSearch();
     },
     [assistant, closeNodeSearch]
@@ -1794,12 +1841,8 @@ const GraphFlowContent: React.FC = () => {
         e.preventDefault();
         const willOpen = !showNodePanel;
         setShowNodePanel(willOpen);
-        if (willOpen) {
-          // Opening the Available Nodes panel closes the workflows panel and
-          // lands on the nodes tab (not the conversational tab).
-          setShowWorkflowPanel(false);
-          setConversationalTabActive(false);
-        }
+        // Opening the Available Nodes panel closes the workflows panel.
+        if (willOpen) setShowWorkflowPanel(false);
       } else if (e.key === "/" && !isTyping && !nodeSearchOpen) {
         e.preventDefault();
         setNodeSearchAgentMode(false);
@@ -1853,7 +1896,8 @@ const GraphFlowContent: React.FC = () => {
     <WorkflowProvider workflow={workflow} setWorkflow={setWorkflow}>
       <WorkflowExecutionProvider>
         <NodeActionsContext.Provider value={nodeActionsValue}>
-        <div className="h-full w-full flex flex-col">
+        <div className="flex h-full w-full">
+        <div className="flex h-full min-w-0 flex-1 flex-col">
           <div className="flex-1 relative">
             <CanvasContextMenu
               onAddNode={handleAddNodeFromContextMenu}
@@ -1872,6 +1916,7 @@ const GraphFlowContent: React.FC = () => {
               )}
             >
               <div
+                ref={canvasRef}
                 onContextMenu={handleCanvasContextMenu}
                 className="h-full w-full"
               >
@@ -1906,7 +1951,7 @@ const GraphFlowContent: React.FC = () => {
                   nodesConnectable={nodesConnectable}
                   elementsSelectable={elementsSelectable}
                   proOptions={PRO_OPTIONS}
-                  onlyRenderVisibleElements
+                  onlyRenderVisibleElements={!assistantTransitioning}
                 >
                   <LowDetailWatcher onChange={setLowDetail} />
                   <Background />
@@ -1993,22 +2038,43 @@ const GraphFlowContent: React.FC = () => {
                 navigation guard and live execution mirroring stay active. */}
             <div
               className={`fixed top-2 z-20 flex flex-row flex-wrap items-start justify-end gap-2 max-w-[calc(100vw-1rem)] ${
-                isResizingNodePanel ? "" : "transition-[right] duration-300"
+                isResizingAssistant ? "" : "transition-[right] duration-300"
               } ${activeTab !== "workflow" ? "hidden" : ""}`}
               style={{
                 right: (() => {
+                  const base = `${assistantOffset}px`;
                   if (showNodePanel && showWorkflowPanel) {
-                    return `calc(${nodePanelWidth}px + 20rem + 1rem)`;
+                    return `calc(${base} + ${NODE_PANEL_DEFAULT_WIDTH_PX}px + 20rem + 1rem)`;
                   } else if (showNodePanel) {
-                    return `calc(${nodePanelWidth}px + 1rem)`;
+                    return `calc(${base} + ${NODE_PANEL_DEFAULT_WIDTH_PX}px + 1rem)`;
                   } else if (showWorkflowPanel) {
-                    return "calc(20rem + 1rem)";
+                    return `calc(${base} + 20rem + 1rem)`;
                   } else {
-                    return "0.5rem";
+                    return `calc(${base} + 0.5rem)`;
                   }
                 })(),
               }}
             >
+              {assistantEnabled && (
+                <Button
+                  onClick={() => setShowAssistant((open) => !open)}
+                  variant="ghost"
+                  title={showAssistant ? "Close GenAgent" : "Open GenAgent"}
+                  aria-pressed={showAssistant}
+                  // Same glassy pill as Save / Test beside it, with a hairline border; while the
+                  // panel is open the pill takes a quiet brand tint instead of a ring.
+                  className={`h-11 gap-2 rounded-full border px-3.5 shadow-sm backdrop-blur-sm transition-colors ${
+                    showAssistant
+                      ? "border-[hsl(var(--brand-600))]/30 bg-[hsl(var(--brand-600))]/10 hover:bg-[hsl(var(--brand-600))]/15"
+                      : "border-border/70 bg-background/80 hover:bg-background"
+                  }`}
+                >
+                  <GenAssistMark className="h-5 w-5 text-zinc-700 dark:text-white" />
+                  <span className="text-sm font-semibold tracking-tight text-foreground">GenAgent</span>
+                  <NavBadge label="BETA" tone="beta" />
+                </Button>
+              )}
+
               <BottomPanel
                 workflow={currentWorkflow}
                 hasUnsavedChanges={hasUnsavedChanges}
@@ -2048,14 +2114,12 @@ const GraphFlowContent: React.FC = () => {
                       : "Open Saved Versions"}
                   </span>
                 </Button>
+
               </div>
             </div>
 
             <NodePanel
               isOpen={showNodePanel}
-              width={nodePanelWidth}
-              onWidthChange={setNodePanelWidth}
-              onResizingChange={setIsResizingNodePanel}
               onClose={toggleNodePanel}
               onAddNode={handlePanelAddNode}
               replaceMode={!!replaceTargetId}
@@ -2067,31 +2131,13 @@ const GraphFlowContent: React.FC = () => {
                   : undefined
               }
               onCancelReplace={() => setReplaceTargetId(null)}
-              messages={assistant.messages}
-              isThinking={assistant.isThinking}
-              activeConversationalTab={conversationalTabActive}
-              onSendMessage={(message, focusNodeIds) => {
-                assistant.sendMessage(message, focusNodeIds);
-                setHasStartedConversation(true);
-              }}
-              onCommand={handleAssistantCommand}
-              mentionables={mentionables}
-              pendingChange={assistant.pendingChange}
-              onKeepChanges={assistant.keepChanges}
-              onUndoChanges={assistant.undoChanges}
-              onApplyProposal={assistant.applyProposal}
-              onRunSuggestedTest={runSuggestedTest}
-              onFocusNode={focusNodeOnCanvas}
-              simulateActions={assistant.simulateActions}
-              onSimulateActionsChange={assistant.setSimulateActions}
-              selectedNodeId={selectedNodes.length === 1 ? selectedNodes[0].id : null}
-              onUndoTurn={assistant.undoTurn}
-              onNewChat={assistant.clearHistory}
+              rightOffset={assistantOffset}
             />
 
             <WorkflowsSavedPanel
               isOpen={showWorkflowPanel}
               onClose={toggleWorkflowPanel}
+              rightOffset={assistantOffset}
               agentId={agentId}
               activeWorkflowId={agent?.workflow_id}
               currentWorkflow={currentWorkflow}
@@ -2209,6 +2255,35 @@ const GraphFlowContent: React.FC = () => {
               description={deletionCopy.description}
             />
           </div>
+        </div>
+        {assistantEnabled && (
+          <AssistantPanel
+            isOpen={showAssistant}
+            width={assistantWidth}
+            onWidthChange={setAssistantWidth}
+            onResizingChange={setIsResizingAssistant}
+            onClose={() => setShowAssistant(false)}
+            messages={assistant.messages}
+            isThinking={assistant.isThinking}
+            liveTurn={assistant.liveTurn}
+            onSendMessage={assistant.sendMessage}
+            onCommand={handleAssistantCommand}
+            mentionables={mentionables}
+            pendingChange={assistant.pendingChange}
+            onKeepChanges={assistant.keepChanges}
+            onUndoChanges={assistant.undoChanges}
+            onApplyProposal={assistant.applyProposal}
+            onRunSuggestedTest={runSuggestedTest}
+            onFocusNode={focusNodeOnCanvas}
+            onAnswerQuestion={assistant.answerQuestion}
+            onReactToMessage={assistant.reactToMessage}
+            simulateActions={assistant.simulateActions}
+            onSimulateActionsChange={assistant.setSimulateActions}
+            selectedNodeId={selectedNodes.length === 1 ? selectedNodes[0].id : null}
+            onUndoTurn={assistant.undoTurn}
+            onNewChat={assistant.clearHistory}
+          />
+        )}
         </div>
         </NodeActionsContext.Provider>
       </WorkflowExecutionProvider>

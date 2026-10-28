@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Sparkles } from "lucide-react";
 
 import { cn } from "@/helpers/utils";
@@ -6,8 +6,11 @@ import { tokenizeComposerText } from "@/components/assistantComposerTokens";
 
 // The field grows with its content up to this height, then scrolls.
 const MAX_FIELD_HEIGHT_PX = 200;
+// The hero box starts tall enough to invite a few sentences.
+const HERO_MIN_HEIGHT_PX = 72;
 // Shared by the textarea and its highlight layer: they must lay out text identically.
 const FIELD_TEXT_CLASSES = "py-1.5 text-sm leading-5 break-words";
+const HERO_TEXT_CLASSES = "py-1 text-[15px] leading-6 break-words";
 
 export interface ComposerMentionable {
   id: string;
@@ -39,6 +42,16 @@ type AssistantComposerProps = {
    * as "@Name" (shown as a badge); the caller may mirror it elsewhere.
    */
   onMentionPick?: (mention: ComposerMentionable) => void | boolean;
+  /**
+   * Controls shown in a row under the text (a toggle, a context chip). With a toolbar,
+   * or in the hero size, the send button sits in that row rather than beside the text.
+   */
+  toolbar?: React.ReactNode;
+  /** "hero": the large, centred opening box; "inline": the one-line field that grows. */
+  size?: "inline" | "hero";
+  autoFocus?: boolean;
+  /** Fired on Escape with an empty field (closing a dialog). */
+  onEscape?: () => void;
 };
 
 interface Picker {
@@ -69,8 +82,14 @@ export function AssistantComposer({
   mentionables,
   commands,
   onMentionPick,
+  toolbar,
+  size = "inline",
+  autoFocus = false,
+  onEscape,
 }: AssistantComposerProps) {
   const canSend = value.trim().length > 0 && !busy;
+  const hero = size === "hero";
+  const twoRows = hero || Boolean(toolbar);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const decorated = Boolean(mentionables?.length || commands?.length);
@@ -92,12 +111,16 @@ export function AssistantComposer({
     const field = fieldRef.current;
     if (!field) return;
     field.style.height = "auto";
-    const contentHeight = field.scrollHeight;
+    const contentHeight = Math.max(field.scrollHeight, hero ? HERO_MIN_HEIGHT_PX : 0);
     field.style.height = `${Math.min(contentHeight, MAX_FIELD_HEIGHT_PX)}px`;
     field.style.overflowY = contentHeight > MAX_FIELD_HEIGHT_PX ? "auto" : "hidden";
-  }, []);
+  }, [hero]);
 
   useLayoutEffect(fitToContent, [value, fitToContent]);
+
+  useEffect(() => {
+    if (autoFocus) fieldRef.current?.focus();
+  }, [autoFocus]);
 
   // The text re-wraps when the surrounding panel is resized, so refit on width changes.
   useEffect(() => {
@@ -207,23 +230,28 @@ export function AssistantComposer({
       )}
       <div
         className={cn(
-          "flex items-end gap-2 rounded-3xl border border-border bg-card py-1.5 pl-3.5 pr-1.5 shadow-sm transition-all focus-within:border-[hsl(var(--brand-600))] focus-within:ring-2 focus-within:ring-[hsl(var(--brand-600))]/20",
+          "border border-border bg-white shadow-sm transition-all focus-within:border-[hsl(var(--brand-600))] focus-within:ring-2 focus-within:ring-[hsl(var(--brand-600))]/20 dark:bg-zinc-900",
+          twoRows
+            ? cn("flex flex-col gap-1", hero ? "rounded-[22px] px-4 pb-2.5 pt-3.5" : "rounded-2xl px-3 pb-1.5 pt-2")
+            : "flex items-end gap-2 rounded-3xl py-1.5 pl-3.5 pr-1.5",
           busy && "opacity-60"
         )}
         onClick={(event) => {
           if (event.target === event.currentTarget) fieldRef.current?.focus();
         }}
       >
-        <Sparkles
-          className="pointer-events-none mb-2 h-4 w-4 shrink-0 text-[hsl(var(--brand-600))]"
-          aria-hidden
-        />
+        {!twoRows && (
+          <Sparkles
+            className="pointer-events-none mb-2 h-4 w-4 shrink-0 text-[hsl(var(--brand-600))]"
+            aria-hidden
+          />
+        )}
         <div className="relative min-w-0 flex-1">
         {hasBadges && (
           <div
             ref={highlightRef}
             aria-hidden
-            className={cn(FIELD_TEXT_CLASSES, "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground")}
+            className={cn(hero ? HERO_TEXT_CLASSES : FIELD_TEXT_CLASSES, "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground")}
           >
             {tokens.map((token, index) =>
               token.kind === "text" ? (
@@ -284,6 +312,11 @@ export function AssistantComposer({
                 return;
               }
             }
+            if (event.key === "Escape" && !value.trim() && onEscape) {
+              event.preventDefault();
+              onEscape();
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               submit();
@@ -294,22 +327,34 @@ export function AssistantComposer({
           disabled={busy}
           aria-label={placeholder}
           className={cn(
-            FIELD_TEXT_CLASSES,
+            hero ? HERO_TEXT_CLASSES : FIELD_TEXT_CLASSES,
             "relative block w-full resize-none bg-transparent placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed",
             hasBadges && "text-transparent caret-foreground"
           )}
         />
         </div>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={!canSend}
-          aria-label="Send message"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--brand-600))] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:opacity-100 dark:disabled:bg-zinc-700"
-        >
-          <ArrowUp className="h-4 w-4 text-white" aria-hidden />
-        </button>
+        {twoRows ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">{toolbar}</div>
+            <SendButton onClick={submit} disabled={!canSend} />
+          </div>
+        ) : (
+          <SendButton onClick={submit} disabled={!canSend} />
+        )}
       </div>
     </div>
   );
 }
+
+const SendButton: React.FC<{ onClick: () => void; disabled: boolean }> = ({ onClick, disabled }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    disabled={disabled}
+    aria-label="Send message"
+    // The GenAssist logo blue, dimmed (not greyed) while there is nothing to send.
+    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#204BFF] text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-[#204BFF]/30 disabled:text-white/70 disabled:opacity-100"
+  >
+    <ArrowUp className="h-4 w-4" aria-hidden />
+  </button>
+);

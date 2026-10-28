@@ -1,10 +1,12 @@
 import { Edge, Node } from "reactflow";
+import type { StreamEvent } from "genassist-chat-react";
 import type {
   AssistProposal,
   BuilderCanvasSnapshot,
   BuilderChange,
   BuilderDraft,
   BuilderIssue,
+  BuilderQuestion,
   ReviewFinding,
 } from "@/services/workflowBuilder";
 
@@ -34,6 +36,110 @@ export interface AssistantMessage {
   undoable?: boolean;
   /** On the person's message: its changes were undone (or superseded by an earlier undo). */
   undone?: boolean;
+  /** What the assistant did before answering: its narrated steps and thoughts, in order. */
+  steps?: AssistantStep[];
+  /** How long the assistant worked before this reply, in milliseconds. */
+  workedMs?: number;
+  /** The reply was shown as it streamed in, so it needs no reveal animation. */
+  streamed?: boolean;
+  /** A question for the person with answers to click (from the builder's ask_user tool). */
+  question?: BuilderQuestion;
+  /** The answer the person gave to `question`, once they have. */
+  answer?: string;
+  /** The person's thumbs up or down on this reply. */
+  reaction?: "up" | "down";
+}
+
+// ── The assistant's work as it happens (streamed turn) ──
+
+/** One narrated step of the assistant's work, or a thought it wrote before acting. */
+export interface AssistantStep {
+  id: string;
+  /** read | lookup | search | edit | test | finalize | question | thought */
+  kind: string;
+  text: string;
+  /** The outcome ("7 of 7 applied"), once the step has ended. */
+  detail?: string;
+  done: boolean;
+}
+
+/** The turn in progress: steps so far and the text the assistant is writing right now. */
+export interface LiveTurn {
+  startedAt: number;
+  steps: AssistantStep[];
+  /** Reply text streamed so far (reset when a new model call starts writing). */
+  text: string;
+  callId: string | null;
+}
+
+export const newLiveTurn = (now = Date.now()): LiveTurn => ({ startedAt: now, steps: [], text: "", callId: null });
+
+/**
+ * Text the model wrote before calling a tool is its reasoning, not the reply:
+ * once a step starts, whatever was streamed so far becomes a "thought" step.
+ */
+function foldTextIntoThought(turn: LiveTurn): LiveTurn {
+  const thought = turn.text.trim();
+  if (!thought) return { ...turn, text: "", callId: null };
+  return {
+    ...turn,
+    text: "",
+    callId: null,
+    steps: [...turn.steps, { id: `thought-${turn.steps.length}`, kind: "thought", text: thought, done: true }],
+  };
+}
+
+/** Fold one stream frame into the turn. Unknown frames leave it unchanged. */
+export function applyLiveStreamEvent(turn: LiveTurn, event: StreamEvent): LiveTurn {
+  if (event.type === "delta") {
+    const sameCall = turn.callId === event.call_id;
+    // A new model call after text was written: the earlier text was a thought.
+    const base = sameCall || !turn.text.trim() ? turn : foldTextIntoThought(turn);
+    return { ...base, callId: event.call_id, text: (sameCall ? base.text : "") + event.text };
+  }
+  if (event.type === "step") {
+    if (event.phase === "start") {
+      const base = foldTextIntoThought(turn);
+      const existing = base.steps.findIndex((step) => step.id === event.id);
+      const step: AssistantStep = { id: event.id, kind: event.kind, text: event.text, done: false };
+      if (existing >= 0) {
+        return { ...base, steps: base.steps.map((s, i) => (i === existing ? { ...s, ...step } : s)) };
+      }
+      return { ...base, steps: [...base.steps, step] };
+    }
+    return {
+      ...turn,
+      steps: turn.steps.map((step) =>
+        step.id === event.id ? { ...step, done: true, detail: event.detail || undefined } : step
+      ),
+    };
+  }
+  return turn;
+}
+
+/** What the finished reply keeps from the turn: every step done, the reasoning intact. */
+export function settleLiveTurn(turn: LiveTurn, now = Date.now()): Pick<AssistantMessage, "steps" | "workedMs"> {
+  const steps = turn.steps.map((step) => (step.done ? step : { ...step, done: true }));
+  return { steps: steps.length ? steps : undefined, workedMs: Math.max(0, now - turn.startedAt) };
+}
+
+/** A short line for a finished turn: "Worked for 12s · 6 steps · 3 changes". */
+export function describeWork(
+  steps: AssistantStep[] | undefined,
+  workedMs: number | undefined,
+  changes?: BuilderChange[]
+): string | null {
+  const stepCount = steps?.length ?? 0;
+  const changeCount = changes?.length ?? 0;
+  if (stepCount === 0 && changeCount === 0) return null;
+  const parts: string[] = [];
+  if (stepCount > 0) {
+    const seconds = Math.max(1, Math.round((workedMs ?? 0) / 1000));
+    const duration = seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+    parts.push(`Worked for ${duration}`, `${stepCount} step${stepCount === 1 ? "" : "s"}`);
+  }
+  if (changeCount > 0) parts.push(`${changeCount} change${changeCount === 1 ? "" : "s"}`);
+  return parts.join(" · ");
 }
 
 export type ChangeKind = "add" | "update" | "remove";

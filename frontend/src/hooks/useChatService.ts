@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChatService, type AgentWelcomeData, type ChatMessage } from "genassist-chat-react";
+import { ChatService, type AgentWelcomeData, type ChatMessage, type StreamEvent } from "genassist-chat-react";
 
 export interface UseChatServiceOptions {
   /** Called for every incoming message (agent, customer, special). */
   onMessage: (message: ChatMessage) => void;
+  /** Called for each progress frame of a streamed turn (reply text, activity, narrated steps). */
+  onStream?: (event: StreamEvent) => void;
   /** Called when the agent sends welcome data (title, FAQs, etc.). */
   onWelcomeData?: (data: AgentWelcomeData) => void;
   /** When this value changes the conversation resets automatically. */
@@ -52,6 +54,7 @@ export interface UseChatServiceReturn {
  */
 export function useChatService({
   onMessage,
+  onStream,
   onWelcomeData,
   scopeId,
   resume = null,
@@ -71,6 +74,8 @@ export function useChatService({
   // Keep callbacks in a ref so the ChatService handler always sees the latest
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
+  const onStreamRef = useRef(onStream);
+  onStreamRef.current = onStream;
   const onWelcomeDataRef = useRef(onWelcomeData);
   onWelcomeDataRef.current = onWelcomeData;
   const resumeRef = useRef(resume);
@@ -119,6 +124,10 @@ export function useChatService({
       if (!isMountedRef.current) return;
       onMessageRef.current(message);
     });
+    chat.setStreamHandler((event: StreamEvent) => {
+      if (!isMountedRef.current) return;
+      onStreamRef.current?.(event);
+    });
 
     if (onWelcomeDataRef.current) {
       chat.setWelcomeDataHandler((data: AgentWelcomeData) => {
@@ -129,6 +138,7 @@ export function useChatService({
 
     return () => {
       chat.setWelcomeDataHandler?.(null);
+      chat.setStreamHandler(null);
       chat.disconnect();
       chatRef.current = null;
     };

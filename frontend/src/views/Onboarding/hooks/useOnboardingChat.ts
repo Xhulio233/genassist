@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type AgentWelcomeData, type ChatMessage } from "genassist-chat-react";
+import { type AgentWelcomeData, type ChatMessage, type StreamEvent } from "genassist-chat-react";
 import { type RegistrationStatus } from "@/context/RoutesContext";
 import { useChatService } from "@/hooks/useChatService";
-import { getBuilderDraftStatus } from "@/services/workflowBuilder";
+import { getBuilderDraftStatus, type BuilderQuestion } from "@/services/workflowBuilder";
+import {
+  applyLiveStreamEvent,
+  newLiveTurn,
+  settleLiveTurn,
+  type AssistantStep,
+  type LiveTurn,
+} from "@/views/AIAgents/Workflows/utils/assistantDraft";
 import {
   extractWorkflowDraftFromText,
   hasWorkflowReadySignal,
@@ -15,6 +22,15 @@ const RESPONSE_TIMEOUT_MS = 180_000;
 export interface OnboardingMessage {
   role: "user" | "agent";
   text: string;
+  /** What the builder did before this reply (narrated steps, thoughts). */
+  steps?: AssistantStep[];
+  workedMs?: number;
+  /** The reply was shown as it streamed, so it needs no reveal animation. */
+  streamed?: boolean;
+  /** A question the builder asked, with answers to click. */
+  question?: BuilderQuestion;
+  answer?: string;
+  reaction?: "up" | "down";
 }
 
 export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: RegistrationStatus }) => {
@@ -27,6 +43,13 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
   const [isWorkflowReady, setIsWorkflowReady] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
+  // The builder's work in progress: narrated steps and the reply as it streams in.
+  const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
+  const liveTurnRef = useRef<LiveTurn | null>(null);
+  const updateLiveTurn = useCallback((turn: LiveTurn | null) => {
+    liveTurnRef.current = turn;
+    setLiveTurn(turn);
+  }, []);
   const [thinkingPhrases, setThinkingPhrases] = useState<string[]>([]);
   const [thinkingDelayMs, setThinkingDelayMs] = useState<number>(1000);
   const [thinkingIndex, setThinkingIndex] = useState(0);
@@ -52,6 +75,13 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
         apiKey,
         tenant: localStorage.getItem("tenant_id") || undefined,
       });
+      if (status?.question) {
+        const question = status.question;
+        setMessages((prev) => {
+          const last = prev.length - 1;
+          return prev.map((msg, index) => (index === last && msg.role === "agent" ? { ...msg, question } : msg));
+        });
+      }
       if (!status?.spec?.workflow?.length) return;
       // conversation_id lets the post-login step create the workflow from the stored draft.
       const draft: WorkflowDraft = { ...status.spec, conversation_id: conversationId };
@@ -75,8 +105,11 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     }
     if (message.speaker === "agent") {
       const rawText = message.text;
-
-      void refreshDraftFromServer();
+      // What the builder did on the way to this reply stays with it.
+      const turn = liveTurnRef.current;
+      const work = turn ? settleLiveTurn(turn) : {};
+      const streamed = Boolean(turn && turn.text.trim());
+      updateLiveTurn(null);
 
       // Fallback for a builder agent that still writes the workflow into its reply.
       const extracted = extractWorkflowDraftFromText(rawText);
@@ -92,9 +125,29 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
 
       const displayText = stripWorkflowTags(rawText);
       setAgentReply(displayText);
-      setMessages((prev) => [...prev, { role: "agent", text: displayText }]);
+      setMessages((prev) => [...prev, { role: "agent", text: displayText, ...work, streamed }]);
+      // After the message is in place, so a question lands on it.
+      void refreshDraftFromServer();
     }
-  }, [refreshDraftFromServer]);
+  }, [refreshDraftFromServer, updateLiveTurn]);
+
+  const handleStream = useCallback(
+    (event: StreamEvent) => {
+      if (!hasUserAskedRef.current) return;
+      updateLiveTurn(applyLiveStreamEvent(liveTurnRef.current ?? newLiveTurn(), event));
+      // Progress means the turn is alive: push the safety timeout back.
+      if (thinkingTimeoutRef.current) {
+        clearTimeout(thinkingTimeoutRef.current);
+        thinkingTimeoutRef.current = setTimeout(() => {
+          setIsThinking(false);
+          updateLiveTurn(null);
+          setError("Response timed out. Please try again.");
+          thinkingTimeoutRef.current = null;
+        }, RESPONSE_TIMEOUT_MS);
+      }
+    },
+    [updateLiveTurn]
+  );
 
   // ── Welcome data handler ──
   const handleWelcomeData = useCallback((data: AgentWelcomeData) => {
@@ -114,6 +167,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     startConversationIfNeeded,
   } = useChatService({
     onMessage: handleMessage,
+    onStream: handleStream,
     onWelcomeData: handleWelcomeData,
   });
   getConversationIdRef.current = () => chatRef.current?.getConversationId?.() ?? null;
@@ -185,6 +239,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
       setIsSending(true);
       hasUserAskedRef.current = true;
       setIsThinking(true);
+      updateLiveTurn(newLiveTurn());
       setThinkingIndex(0);
 
       // Safety timeout — building a workflow takes many steps, so allow a few minutes
@@ -204,12 +259,30 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
         const message = err instanceof Error ? err.message : "Unable to send message.";
         setError(message);
         setIsThinking(false);
+        updateLiveTurn(null);
       } finally {
         setIsSending(false);
       }
     },
-    [hasConfig, chatSend, chatRef],
+    [hasConfig, chatSend, chatRef, updateLiveTurn],
   );
+
+  /** Answer a question the builder asked: recorded on the question, sent as the next message. */
+  const answerQuestion = useCallback(
+    (messageIndex: number, answer: string) => {
+      const trimmed = answer.trim();
+      if (!trimmed) return;
+      setMessages((prev) => prev.map((msg, index) => (index === messageIndex ? { ...msg, answer: trimmed } : msg)));
+      void sendMessage(trimmed);
+    },
+    [sendMessage]
+  );
+
+  const reactToMessage = useCallback((messageIndex: number, reaction: "up" | "down" | null) => {
+    setMessages((prev) =>
+      prev.map((msg, index) => (index === messageIndex ? { ...msg, reaction: reaction ?? undefined } : msg))
+    );
+  }, []);
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent) => {
@@ -243,7 +316,7 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     return "Now let's create your first agent together.";
   }, [agentReply, isThinking, thinkingPhrases, thinkingIndex, hasUserStartedChat, welcomeMessage]);
 
-  const titleText = welcomeTitle || "What would you like your agent to do?";
+  const titleText = welcomeTitle || "What do you want to automate?";
 
   return {
     prompt,
@@ -251,6 +324,10 @@ export const useOnboardingChat = ({ registrationStatus }: { registrationStatus: 
     agentReply,
     messages,
     isThinking,
+    liveTurn,
+    sendMessage,
+    answerQuestion,
+    reactToMessage,
     subtitleText,
     titleText,
     welcomeFaqs,

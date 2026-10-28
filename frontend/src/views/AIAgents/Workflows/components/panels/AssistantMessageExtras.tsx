@@ -1,19 +1,10 @@
-import React from "react";
-import { AlertTriangle, Check, Pencil, Plus, Trash2, Undo2, Wrench, Play } from "lucide-react";
+import React, { useState } from "react";
+import { AlertTriangle, ArrowUp, Check, CircleHelp, Pencil, Sparkles, Undo2, Wrench, Play } from "lucide-react";
 import { Button } from "@/components/button";
-import type { AssistProposal, ReviewFinding } from "@/services/workflowBuilder";
+import { cn } from "@/helpers/utils";
+import type { AssistProposal, BuilderQuestion, ReviewFinding } from "@/services/workflowBuilder";
 import type { PendingChange } from "@/views/AIAgents/Workflows/hooks/useCanvasAssistant";
-import {
-  changeKind,
-  FIX_ISSUES_MESSAGE,
-  type AssistantMessage,
-} from "@/views/AIAgents/Workflows/utils/assistantDraft";
-
-const BADGE = {
-  add: "bg-green-50 text-green-700 border-green-200 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30",
-  update: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/30",
-  remove: "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30",
-};
+import { FIX_ISSUES_MESSAGE, type AssistantMessage } from "@/views/AIAgents/Workflows/utils/assistantDraft";
 
 const SEVERITY = {
   error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30",
@@ -31,12 +22,15 @@ interface Props {
   onRunSuggestedTest?: (message: string) => void;
   /** Centre the canvas on a node and open its settings (for issues and findings). */
   onFocusNode?: (nodeId: string, openSettings: boolean) => void;
+  /** Answer the question the assistant asked in this message. */
+  onAnswer?: (messageId: string, answer: string) => void;
 }
 
 /**
- * Everything an assistant message can carry besides its text: the change
- * badges, the issues it left (with a one-click fix), proposals waiting for
- * approval, suggested test messages, and review findings.
+ * Everything an assistant message can carry besides its text: a question to
+ * answer, the issues it left (with a one-click fix), proposals waiting for
+ * approval, suggested test messages, and review findings. (What it changed is
+ * listed under the "Worked for…" line above the text.)
  */
 export const AssistantMessageExtras: React.FC<Props> = ({
   msg,
@@ -46,27 +40,19 @@ export const AssistantMessageExtras: React.FC<Props> = ({
   onApplyProposal,
   onRunSuggestedTest,
   onFocusNode,
+  onAnswer,
 }) => {
   const issues = msg.issues ?? [];
   const findings: ReviewFinding[] = msg.findings ?? [];
   return (
     <>
-      {msg.changes && msg.changes.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {msg.changes.map((change, index) => {
-            const kind = changeKind(change);
-            const Icon = kind === "add" ? Plus : kind === "update" ? Pencil : Trash2;
-            return (
-              <span
-                key={`${change.op}-${index}`}
-                className={`inline-flex items-center gap-1 text-xs border rounded-full px-2.5 py-1 ${BADGE[kind]}`}
-              >
-                <Icon className="h-3 w-3" />
-                {change.summary}
-              </span>
-            );
-          })}
-        </div>
+      {msg.question && (
+        <QuestionCard
+          question={msg.question}
+          answer={msg.answer}
+          disabled={busy || !isLatest || !onAnswer}
+          onAnswer={(answer) => onAnswer?.(msg.id, answer)}
+        />
       )}
 
       {issues.length > 0 && (
@@ -183,6 +169,131 @@ export const AssistantMessageExtras: React.FC<Props> = ({
         </ul>
       )}
     </>
+  );
+};
+
+/**
+ * A question from the assistant with its answers as buttons: the one it would
+ * pick first, marked, plus "Something else" for the person's own words. Once
+ * answered it stays as a record of what was chosen.
+ */
+export const QuestionCard: React.FC<{
+  question: BuilderQuestion;
+  answer?: string;
+  disabled: boolean;
+  onAnswer: (answer: string) => void;
+}> = ({ question, answer, disabled, onAnswer }) => {
+  const [other, setOther] = useState(false);
+  const [custom, setCustom] = useState("");
+  const options = [
+    ...question.options.filter((option) => option === question.recommended),
+    ...question.options.filter((option) => option !== question.recommended),
+  ];
+  const answered = Boolean(answer);
+  const submitCustom = () => {
+    if (!custom.trim()) return;
+    onAnswer(custom.trim());
+    setCustom("");
+    setOther(false);
+  };
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-border bg-muted/30">
+      <div className="flex items-start gap-2 px-3 pt-2.5">
+        <CircleHelp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--brand-600))]" aria-hidden />
+        <p className="text-xs font-medium text-foreground">{question.question}</p>
+      </div>
+      <ul className="mt-2 space-y-1 px-2 pb-2">
+        {options.map((option) => {
+          const recommended = option === question.recommended;
+          const chosen = answered && answer === option;
+          return (
+            <li key={option}>
+              <button
+                type="button"
+                disabled={disabled || answered}
+                onClick={() => onAnswer(option)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors",
+                  chosen
+                    ? "border-[hsl(var(--brand-600))]/50 bg-[hsl(var(--brand-600))]/10 text-foreground"
+                    : answered
+                    ? "border-transparent text-muted-foreground opacity-60"
+                    : "border-border bg-background text-foreground hover:border-[hsl(var(--brand-600))]/50 hover:bg-[hsl(var(--brand-600))]/5 disabled:cursor-default disabled:opacity-60"
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                    chosen ? "border-[hsl(var(--brand-600))] bg-[hsl(var(--brand-600))] text-white" : "border-border"
+                  )}
+                >
+                  {chosen && <Check className="h-2.5 w-2.5" />}
+                </span>
+                <span className="min-w-0 flex-1">{option}</span>
+                {recommended && !answered && (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[hsl(var(--brand-600))]/10 px-1.5 py-0.5 text-[10px] font-medium text-[hsl(var(--brand-600))]">
+                    <Sparkles className="h-2.5 w-2.5" />
+                    Recommended
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
+        {answered && !question.options.includes(answer as string) && (
+          <li className="flex items-center gap-2 rounded-lg border border-[hsl(var(--brand-600))]/50 bg-[hsl(var(--brand-600))]/10 px-2.5 py-1.5 text-xs text-foreground">
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--brand-600))] bg-[hsl(var(--brand-600))] text-white">
+              <Check className="h-2.5 w-2.5" />
+            </span>
+            <span className="min-w-0 flex-1">{answer}</span>
+          </li>
+        )}
+        {!answered && !other && (
+          <li>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setOther(true)}
+              className="flex w-full items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:border-[hsl(var(--brand-600))]/50 hover:text-foreground disabled:cursor-default disabled:opacity-60"
+            >
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-dashed border-border">
+                <Pencil className="h-2.5 w-2.5" />
+              </span>
+              Something else…
+            </button>
+          </li>
+        )}
+        {!answered && other && (
+          <li className="flex items-center gap-1.5 rounded-lg border border-[hsl(var(--brand-600))]/50 bg-background py-1 pl-2.5 pr-1 text-xs">
+            <input
+              autoFocus
+              value={custom}
+              disabled={disabled}
+              onChange={(event) => setCustom(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitCustom();
+                }
+                if (event.key === "Escape") setOther(false);
+              }}
+              placeholder="Type your answer…"
+              aria-label="Your answer"
+              className="min-w-0 flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={submitCustom}
+              disabled={disabled || !custom.trim()}
+              aria-label="Send answer"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--brand-600))] text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              <ArrowUp className="h-3 w-3" />
+            </button>
+          </li>
+        )}
+      </ul>
+    </div>
   );
 };
 

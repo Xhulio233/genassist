@@ -35,6 +35,9 @@ DRAFT_METADATA_KEY = "workflow_builder_draft"
 
 STATUS_DRAFT = "draft"
 STATUS_READY = "ready"
+# ask_user: how many answers a question may offer, and how long each may be.
+MAX_OPTIONS = 4
+MAX_OPTION_CHARS = 80
 
 ORIGIN_NEW = "new"
 ORIGIN_CANVAS = "canvas"
@@ -175,6 +178,10 @@ class WorkflowDraft:
         # Builder test runs bypass steps that send or create things (tickets, emails,
         # messages) unless the person turns simulation off on the canvas.
         self.simulate_actions = True
+        # A question the builder asked with ask_user, shown on the canvas as options
+        # to click: {"question", "options", "recommended"}. Cleared when the next
+        # turn starts from the canvas.
+        self.question: Optional[Dict[str, Any]] = None
         self._assign_aliases()
 
     # ── Construction / persistence ────────────────────────────────────────
@@ -313,6 +320,7 @@ class WorkflowDraft:
             "same_failure_count": self.same_failure_count,
             "last_failure": self.last_failure,
             "simulate_actions": self.simulate_actions,
+            "question": self.question,
         }
 
     @classmethod
@@ -339,6 +347,8 @@ class WorkflowDraft:
         draft.same_failure_count = int(payload.get("same_failure_count") or 0)
         draft.last_failure = payload.get("last_failure") or ""
         draft.simulate_actions = bool(payload.get("simulate_actions", True))
+        question = payload.get("question")
+        draft.question = question if isinstance(question, dict) else None
         draft._assign_aliases()
         return draft
 
@@ -1105,6 +1115,38 @@ class WorkflowDraft:
             message += f"\nIt still has warnings; fix them first if they are mistakes:\n{listing}"
         return {"message": message}
 
+    def ask(self, question: Any, options: Any, recommended: Any = None) -> str:
+        """
+        Record a question for the person, with the answers they can click. The
+        reply tells the agent to end its turn: nothing is built until they answer.
+        """
+        text = " ".join(str(question or "").split())
+        if not text:
+            raise DraftError("ask_user needs the question text.")
+        choices = options
+        if isinstance(choices, str):
+            try:
+                choices = json.loads(choices)
+            except (ValueError, TypeError):
+                choices = [part.strip() for part in choices.split("|")]
+        if not isinstance(choices, list):
+            raise DraftError("ask_user options must be a JSON array of 2 to 4 short answers.")
+        cleaned: List[str] = []
+        for choice in choices:
+            label = " ".join(str(choice or "").split())[:MAX_OPTION_CHARS]
+            if label and label.lower() not in {c.lower() for c in cleaned}:
+                cleaned.append(label)
+        if not 2 <= len(cleaned) <= MAX_OPTIONS:
+            raise DraftError(f"ask_user needs 2 to {MAX_OPTIONS} different options; got {len(cleaned)}.")
+        picked = " ".join(str(recommended or "").split())
+        match = next((c for c in cleaned if c.lower() == picked.lower()), None) if picked else None
+        self.question = {"question": text, "options": cleaned, "recommended": match}
+        return (
+            "Question recorded; the person sees the options as buttons and can type their own answer. "
+            "End your turn now: reply with the question in one sentence and nothing else. Do not list "
+            "the options and do not change the workflow until they answer."
+        )
+
     def apply_defaults(self, defaults: Dict[str, Any]) -> None:
         """Fill tenant defaults (the LLM provider) into nodes that still lack them."""
         self.defaults.update({k: v for k, v in (defaults or {}).items() if v})
@@ -1277,6 +1319,7 @@ class WorkflowDraft:
                 for i in issues
             ],
             "has_errors": any(i.severity == ERROR for i in issues),
+            "question": self.question,
         }
 
 

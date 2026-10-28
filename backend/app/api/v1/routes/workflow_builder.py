@@ -51,6 +51,8 @@ class AssistRequest(BaseModel):
     action: str
     node_ids: List[str] = Field(default_factory=list)
     instruction: str = ""
+    # For add_step: the output of the first node the new step follows.
+    source_handle: Optional[str] = None
 
 
 class ApplyRequest(BaseModel):
@@ -149,14 +151,18 @@ async def get_draft_status(conversation_id: UUID):
     the draft in the simplified specification format, for previewing.
     """
     draft = await load_draft(str(conversation_id))
-    if draft is None or not draft.nodes:
-        return {"status": "empty", "ready": False, "node_count": 0, "summary": "", "spec": None}
+    if draft is None:
+        return {"status": "empty", "ready": False, "node_count": 0, "summary": "", "spec": None, "question": None}
+    if not draft.nodes:
+        return {"status": "empty", "ready": False, "node_count": 0, "summary": "", "spec": None, "question": draft.question}
     return {
         "status": draft.status,
         "ready": draft.status == STATUS_READY and not blocking(draft.issues()),
         "node_count": len(draft.aliases),
         "summary": draft.summary,
         "spec": draft.to_spec(),
+        # A question the builder asked (ask_user), so the pre-login chat can show its options too.
+        "question": draft.question,
     }
 
 
@@ -191,12 +197,13 @@ async def assist_action(body: AssistRequest):
     """
     One focused action on the canvas as it is: explain a step or a group, describe
     the workflow, explain a step in the last test run, suggest test messages,
-    review, or propose a change (improved prompt, generated code, optimisations).
+    review, or propose a change (improved prompt, generated code, optimisations, one
+    new step after a given output).
     Proposals are returned, not applied; the canvas applies them with /assist/apply.
     """
     draft = _draft_from_snapshot(body.snapshot)
     try:
-        return await assist.run_action(draft, body.action, body.node_ids, body.instruction)
+        return await assist.run_action(draft, body.action, body.node_ids, body.instruction, body.source_handle)
     except (ValueError, DraftError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 

@@ -1,35 +1,10 @@
 import React, { useState, useRef, useMemo, useCallback } from "react";
-import { Tabs, TabsList, TabsTrigger } from "@/components/tabs";
-import { AlertTriangle, GripVertical, HelpCircle, Search, Sparkles, Plus, Pencil, Trash2, X, ExternalLink, Undo2, MoreHorizontal, MessageSquarePlus } from "lucide-react";
+import { HelpCircle, Search, X, ExternalLink } from "lucide-react";
 import { RichInput } from "@/components/richInput";
 import nodeRegistry from "@/views/AIAgents/Workflows/registry/nodeRegistry";
 import { getNodeBgColor, getNodeIconColor } from "@/views/AIAgents/Workflows/utils/nodeColors";
 import { renderIcon } from "@/views/AIAgents/Workflows/utils/iconUtils";
-import { useFeatureFlagVisible } from "@/components/featureFlag";
-import { FeatureFlags } from "@/config/featureFlags";
 import { useHiddenNodeTypes } from "../../hooks/useHiddenNodeTypes";
-import type { AssistantMessage } from "@/views/AIAgents/Workflows/utils/assistantDraft";
-import {
-  parseSlashCommand,
-  SLASH_COMMANDS,
-} from "@/views/AIAgents/Workflows/utils/assistantDraft";
-import type { AssistProposal } from "@/services/workflowBuilder";
-import type { ComposerMentionable } from "@/components/AssistantComposer";
-import type { PendingChange } from "@/views/AIAgents/Workflows/hooks/useCanvasAssistant";
-import { AssistantMessageExtras, PendingChangeBar } from "./AssistantMessageExtras";
-import { MentionedNodesRow, MentionText, NodeChip } from "./NodeChips";
-import { ThinkingIndicator, Typewriter } from "./AssistantMotion";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/dropdown-menu";
-import { Checkbox } from "@/components/checkbox";
-import FormattedText from "@/components/FormattedText";
-import { AssistantComposer } from "@/components/AssistantComposer";
-import { mentionedIds, removeMention } from "@/components/assistantComposerTokens";
-import { AssistantEmptyState } from "@/components/AssistantEmptyState";
 import { Button } from "@/components/button";
 import { Badge } from "@/components/badge";
 import {
@@ -64,23 +39,9 @@ import { getNodeDocsUrl } from "@/views/AIAgents/Workflows/utils/nodeDocsLinks";
 import { isNewNode } from "@/views/AIAgents/Workflows/utils/newNodes";
 
 export const NODE_PANEL_DEFAULT_WIDTH_PX = 360;
-const NODE_PANEL_MIN_WIDTH_PX = 320;
-
-function getMaxNodePanelWidthPx(): number {
-  if (typeof window === "undefined") return NODE_PANEL_DEFAULT_WIDTH_PX;
-  return Math.max(NODE_PANEL_MIN_WIDTH_PX, Math.round(window.innerWidth * 0.7));
-}
-function clampNodePanelWidth(w: number): number {
-  return Math.max(NODE_PANEL_MIN_WIDTH_PX, Math.min(getMaxNodePanelWidthPx(), Math.round(w)));
-}
 
 interface NodePanelProps {
   isOpen: boolean;
-  /** Current panel width in px (owned by the parent so it can offset the canvas controls). */
-  width?: number;
-  onWidthChange?: (width: number) => void;
-  /** Fires when a drag-resize starts/ends, so the parent can pause its own transitions. */
-  onResizingChange?: (resizing: boolean) => void;
   onClose: () => void;
   onAddNode: (nodeType: string) => void;
   /** When true, picking a node replaces an existing node instead of adding one. */
@@ -89,28 +50,8 @@ interface NodePanelProps {
   replaceNodeName?: string;
   /** Exit replace mode without replacing. */
   onCancelReplace?: () => void;
-  messages?: AssistantMessage[];
-  isThinking?: boolean;
-  activeConversationalTab?: boolean;
-  onSendMessage?: (message: string, focusNodeIds?: string[]) => void;
-  /** "/explain", "/review", ... typed in the composer. */
-  onCommand?: (command: string, rest: string, nodeIds?: string[]) => void;
-  /** Nodes the person can @-mention. */
-  mentionables?: ComposerMentionable[];
-  pendingChange?: PendingChange | null;
-  onKeepChanges?: () => void;
-  onUndoChanges?: () => void;
-  onApplyProposal?: (messageId: string, proposal: AssistProposal) => void;
-  onRunSuggestedTest?: (message: string) => void;
-  onFocusNode?: (nodeId: string, openSettings: boolean) => void;
-  simulateActions?: boolean;
-  onSimulateActionsChange?: (value: boolean) => void;
-  /** The node selected on the canvas, shown as context under the composer. */
-  selectedNodeId?: string | null;
-  /** Undo everything the assistant changed in response to one of the person's messages. */
-  onUndoTurn?: (messageId: string) => void;
-  /** Forget this chat and start a new conversation with the assistant. */
-  onNewChat?: () => void;
+  /** Space kept free on the right (the assistant panel), in px. */
+  rightOffset?: number;
 }
 
 interface HelpDialogState {
@@ -126,39 +67,11 @@ const NodePanel: React.FC<NodePanelProps> = ({
   isOpen,
   onClose,
   onAddNode,
-  width = NODE_PANEL_DEFAULT_WIDTH_PX,
-  onWidthChange,
-  onResizingChange,
   replaceMode = false,
   replaceNodeName,
   onCancelReplace,
-  messages = [],
-  isThinking = false,
-  activeConversationalTab = false,
-  onSendMessage,
-  onCommand,
-  mentionables = [],
-  pendingChange = null,
-  onKeepChanges,
-  onUndoChanges,
-  onApplyProposal,
-  onRunSuggestedTest,
-  onFocusNode,
-  simulateActions = true,
-  onSimulateActionsChange,
-  selectedNodeId = null,
-  onUndoTurn,
-  onNewChat,
+  rightOffset = 0,
 }) => {
-  // Steps the person attached to the next message (picked with "@"), shown as chips.
-  const [focusChips, setFocusChips] = useState<ComposerMentionable[]>([]);
-  const chipNodes = mentionables.map((m) => ({ id: m.id, name: m.name, type: m.hint }));
-  const selectedNode = selectedNodeId ? chipNodes.find((n) => n.id === selectedNodeId) : undefined;
-  const focusCanvasNode = (nodeId: string) => onFocusNode?.(nodeId, false);
-  // Replies already revealed; a re-render must not type them out again.
-  const revealedRef = useRef<Set<string>>(new Set());
-  const shouldReveal = (msg: AssistantMessage) =>
-    !!msg.arrivedAt && Date.now() - msg.arrivedAt < 15_000 && !revealedRef.current.has(msg.id);
   const nodeCategories = nodeRegistry.getAllCategories();
   const [draggingNodeType, setDraggingNodeType] = useState<string | null>(null);
   const dragPreviewContainerRef = useRef<HTMLDivElement>(null);
@@ -166,57 +79,7 @@ const NodePanel: React.FC<NodePanelProps> = ({
   const [activeTab, setActiveTab] = useState<string>("available");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedHelp, setSelectedHelp] = useState<HelpDialogState | null>(null);
-  const [inputMessage, setInputMessage] = useState<string>("");
-  const conversationScrollRef = useRef<HTMLDivElement>(null);
 
-  // Drag-resize from the left edge. Pointer capture keeps the drag alive over the canvas.
-  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
-  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    resizeStartRef.current = { x: e.clientX, width };
-    onResizingChange?.(true);
-  };
-  const handleResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const start = resizeStartRef.current;
-    if (!start) return;
-    onWidthChange?.(clampNodePanelWidth(start.width + (start.x - e.clientX)));
-  };
-  const handleResizeEnd = () => {
-    if (!resizeStartRef.current) return;
-    resizeStartRef.current = null;
-    onResizingChange?.(false);
-  };
-
-  // When the viewport shrinks, clamp the width so the resize handle stays on screen.
-  React.useEffect(() => {
-    if (!isOpen) return;
-    const handleWindowResize = () => {
-      const max = getMaxNodePanelWidthPx();
-      if (width > max) onWidthChange?.(max);
-    };
-    window.addEventListener("resize", handleWindowResize);
-    handleWindowResize();
-    return () => window.removeEventListener("resize", handleWindowResize);
-  }, [isOpen, width, onWidthChange]);
-
-  // Auto-scroll conversation to bottom
-  React.useEffect(() => {
-    if (conversationScrollRef.current) {
-      conversationScrollRef.current.scrollTop = conversationScrollRef.current.scrollHeight;
-    }
-  }, [messages, isThinking]);
-
-  // Auto-switch to conversational tab when messages arrive
-  React.useEffect(() => {
-    if (activeConversationalTab) {
-      setActiveTab("conversational");
-    }
-  }, [activeConversationalTab]);
-
-  const showConversationalTab = useFeatureFlagVisible(FeatureFlags.WORKFLOW.CONVERSATIONAL_TAB);
   // Flag-gated node types never appear in the palette (see useHiddenNodeTypes).
   const hiddenNodeTypes = useHiddenNodeTypes();
   const visibleNodesByCategory = useCallback(
@@ -225,37 +88,13 @@ const NodePanel: React.FC<NodePanelProps> = ({
     [hiddenNodeTypes]
   );
 
-  // Focus the node search whenever the panel opens on the Available Nodes tab
-  // (e.g. via the ⌘I / Ctrl+I shortcut or the toggle button).
+  // Focus the node search whenever the panel opens (e.g. via the ⌘I / Ctrl+I shortcut or the toggle button).
   React.useEffect(() => {
-    if (isOpen && (activeTab === "available" || !showConversationalTab)) {
-      // Delay so the slide-in transition doesn't swallow the focus.
-      const timer = setTimeout(() => searchInputRef.current?.focus(), 60);
-      return () => clearTimeout(timer);
-    }
-  }, [isOpen, activeTab, showConversationalTab]);
-
-  // The composer owns the trimming, the Enter key and clearing the field.
-  // "/command rest" goes to the command handler; "@Name" mentions become the focus of the message.
-  const handleSend = (message: string, focusNodeIds?: string[]) => {
-    const chips = focusChips.map((m) => m.id);
-    const tagged = focusNodeIds ?? [...chips, ...mentionedIds(message, mentionables).filter((id) => !chips.includes(id))];
-    const command = parseSlashCommand(message);
-    if (command && onCommand) {
-      setFocusChips([]);
-      onCommand(command.command, command.rest, tagged);
-      return;
-    }
-    setFocusChips([]);
-    onSendMessage?.(message, tagged);
-  };
-
-  // Removing a chip also takes its "@Name" out of the field, so the two never disagree.
-  const removeFocusChip = (id: string) => {
-    const chip = focusChips.find((c) => c.id === id);
-    setFocusChips((prev) => prev.filter((c) => c.id !== id));
-    if (chip) setInputMessage((prev) => removeMention(prev, chip.name));
-  };
+    if (!isOpen) return;
+    // Delay so the slide-in transition doesn't swallow the focus.
+    const timer = setTimeout(() => searchInputRef.current?.focus(), 60);
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
   // Handle drag start
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
@@ -541,30 +380,16 @@ const NodePanel: React.FC<NodePanelProps> = ({
       ></div>
 
       <div
-        className={`fixed top-2 right-2 h-[calc(100vh-1rem)] bg-background shadow-lg rounded-xl transition-transform duration-300 border ${
+        className={`fixed top-2 h-[calc(100vh-1rem)] bg-background shadow-lg rounded-xl transition-[transform,visibility] duration-300 border ${
           selectedHelp ? "z-40" : "z-[1001]"
-        } ${
-          isOpen ? "translate-x-0" : "translate-x-[calc(100%+0.5rem)]"
-        }`}
-        style={{ width }}
+        } ${isOpen ? "visible" : "invisible pointer-events-none"}`}
+        style={{
+          width: NODE_PANEL_DEFAULT_WIDTH_PX,
+          right: `calc(0.5rem + ${rightOffset}px)`,
+          // Closed, it slides fully off the viewport, past the assistant panel beside it.
+          transform: isOpen ? "translateX(0)" : `translateX(calc(100% + 0.5rem + ${rightOffset}px))`,
+        }}
       >
-        {onWidthChange && (
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize panel"
-            className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize touch-none z-20 flex items-center justify-center group hover:bg-primary/10 rounded-l-xl transition-colors"
-            onPointerDown={handleResizeStart}
-            onPointerMove={handleResizeMove}
-            onPointerUp={handleResizeEnd}
-            onPointerCancel={handleResizeEnd}
-            onDoubleClick={() => onWidthChange(NODE_PANEL_DEFAULT_WIDTH_PX)}
-          >
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-              <GripVertical className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </div>
-        )}
         <div className="flex flex-col h-full">
           {/* Replace-mode banner */}
           {replaceMode && (
@@ -590,69 +415,15 @@ const NodePanel: React.FC<NodePanelProps> = ({
             </div>
           )}
 
-          {/* Tabs Header */}
-          <div className="p-4">
-            {showConversationalTab ? (
-              <Tabs
-                value={activeTab}
-                onValueChange={setActiveTab}
-                className="w-full"
-              >
-                <TabsList className="w-full h-10 bg-muted p-1 rounded-full">
-                  <TabsTrigger
-                    value="available"
-                    aria-label="Available Nodes"
-                    className="flex-1 text-sm font-medium rounded-full"
-                  >
-                    Available Nodes
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="conversational"
-                    aria-label="Conversational AI"
-                    className="relative flex-1 text-sm font-medium rounded-full"
-                  >
-                    Conversational
-                    {onNewChat && activeTab === "conversational" && (
-                      // A span, not a button: it sits inside the tab's own button.
-                      <DropdownMenu modal={false}>
-                        <DropdownMenuTrigger asChild>
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            title="Chat options"
-                            aria-label="Chat options"
-                            onClick={(event) => event.stopPropagation()}
-                            onKeyDown={(event) => event.stopPropagation()}
-                            className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </span>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" sideOffset={6} className="z-[2100] min-w-[180px]">
-                          <DropdownMenuItem
-                            disabled={isThinking || messages.length === 0}
-                            onSelect={() => setTimeout(onNewChat, 0)}
-                          >
-                            <MessageSquarePlus className="mr-2 h-4 w-4" />
-                            New chat
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-            ) : (
-              <h3 className="text-sm font-semibold">Available Nodes</h3>
-            )}
+          <div className="px-4 pt-4 pb-1">
+            <h3 className="text-sm font-semibold">Available Nodes</h3>
           </div>
 
           {/* Tabs Content */}
           <div className="flex-1 overflow-y-auto bg-background rounded-xl">
-            {(activeTab === "available" || !showConversationalTab) && (
-              <div className="w-full">
+            <div className="w-full">
                 {/* Search Field */}
-                <div className="px-4 pt-4 pb-2 sticky top-0 bg-background z-10">
+                <div className="px-4 pt-2 pb-2 sticky top-0 bg-background z-10">
                   <div className="relative flex items-center">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                     <RichInput
@@ -680,148 +451,6 @@ const NodePanel: React.FC<NodePanelProps> = ({
                 </div>
                 {renderNodeCategories()}
               </div>
-            )}
-            {showConversationalTab && activeTab === "conversational" && (
-              <div className="flex flex-col h-full">
-                {/* Messages area */}
-                <div ref={conversationScrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-                  {messages.length === 0 && !isThinking ? (
-                    <div>
-                      <AssistantEmptyState
-                        title="Let's create your agent together."
-                        prompt="What would you like your agent to do?"
-                      />
-                      {onCommand && (
-                        <div className="mt-3 flex flex-wrap justify-center gap-1.5">
-                          {[
-                            ["describe", "Describe this workflow"],
-                            ["review", "Review for problems"],
-                            ["tests", "Suggest test messages"],
-                            ["optimize", "Optimize"],
-                          ].map(([command, label]) => (
-                            <button
-                              key={command}
-                              type="button"
-                              onClick={() => onCommand(command, "")}
-                              className="rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-foreground hover:bg-muted"
-                            >
-                              {label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <>
-                      {messages.map((msg) => (
-                        <div key={msg.id}>
-                          {msg.speaker === "customer" ? (
-                            <div className="group flex items-end justify-end gap-1.5">
-                              {msg.undoable && !msg.undone && onUndoTurn && (
-                                <button
-                                  type="button"
-                                  onClick={() => onUndoTurn(msg.id)}
-                                  disabled={isThinking}
-                                  title="Undo everything the assistant changed for this message"
-                                  aria-label="Undo this message's changes"
-                                  className="mb-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-60 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 disabled:opacity-30"
-                                >
-                                  <Undo2 className="h-3.5 w-3.5" />
-                                </button>
-                              )}
-                              <div
-                                className={`max-w-[80%] bg-blue-600 text-white text-sm rounded-2xl rounded-br-md px-4 py-2.5 ${
-                                  msg.undone ? "opacity-60 line-through decoration-white/60" : ""
-                                }`}
-                                title={msg.undone ? "The changes for this message were undone" : undefined}
-                              >
-                                <MentionText text={msg.text} nodes={chipNodes} onFocusNode={focusCanvasNode} inverted />
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex gap-2.5">
-                              <div className="flex-shrink-0 mt-1">
-                                <div className="h-6 w-6 rounded-full bg-[hsl(var(--brand-50))] flex items-center justify-center">
-                                  <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--brand-600))]" />
-                                </div>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm text-foreground leading-relaxed">
-                                  <Typewriter
-                                    text={msg.text}
-                                    animate={shouldReveal(msg)}
-                                    onDone={() => revealedRef.current.add(msg.id)}
-                                  >
-                                    <FormattedText text={msg.text} />
-                                    <MentionedNodesRow text={msg.text} nodes={chipNodes} onFocusNode={focusCanvasNode} />
-                                  </Typewriter>
-                                </div>
-                                <AssistantMessageExtras
-                                  msg={msg}
-                                  isLatest={msg.id === messages[messages.length - 1]?.id}
-                                  busy={isThinking}
-                                  onSend={handleSend}
-                                  onApplyProposal={onApplyProposal}
-                                  onRunSuggestedTest={onRunSuggestedTest}
-                                  onFocusNode={onFocusNode}
-                                />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {isThinking && <ThinkingIndicator />}
-                    </>
-                  )}
-                </div>
-                {pendingChange && onKeepChanges && onUndoChanges && (
-                  <PendingChangeBar change={pendingChange} onKeep={onKeepChanges} onUndo={onUndoChanges} />
-                )}
-                {/* Input bar */}
-                <div className="p-3 pt-0">
-                  {(focusChips.length > 0 || selectedNode) && (
-                    <div className="mb-1.5 flex flex-wrap items-center gap-1 px-1">
-                      {focusChips.map((chip) => (
-                        <NodeChip
-                          key={chip.id}
-                          node={{ id: chip.id, name: chip.name, type: chip.hint }}
-                          onClick={focusCanvasNode}
-                          onRemove={removeFocusChip}
-                        />
-                      ))}
-                      {focusChips.length === 0 && selectedNode && (
-                        <>
-                          <span className="text-[11px] text-muted-foreground">Selected:</span>
-                          <NodeChip node={selectedNode} onClick={focusCanvasNode} soft />
-                        </>
-                      )}
-                    </div>
-                  )}
-                  <AssistantComposer
-                    value={inputMessage}
-                    onChange={setInputMessage}
-                    onSubmit={handleSend}
-                    placeholder="Ask AI to update your workflow... (@ a step, / for commands)"
-                    busy={isThinking}
-                    mentionables={mentionables}
-                    commands={SLASH_COMMANDS}
-                    onMentionPick={(mention) => {
-                      setFocusChips((prev) => (prev.some((c) => c.id === mention.id) ? prev : [...prev, mention]));
-                    }}
-                  />
-                  {onSimulateActionsChange && (
-                    <label className="mt-2 flex cursor-pointer items-center gap-2 px-1 text-[11px] text-muted-foreground">
-                      <Checkbox
-                        checked={simulateActions}
-                        onCheckedChange={(checked) => onSimulateActionsChange(checked === true)}
-                        className="h-3.5 w-3.5"
-                      />
-                      Simulate actions (tickets, emails, messages) in AI test runs
-                    </label>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

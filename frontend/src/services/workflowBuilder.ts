@@ -25,6 +25,14 @@ export interface BuilderIssue {
   pre_existing: boolean;
 }
 
+/** A question the builder asked with its ask_user tool; the options are shown as buttons. */
+export interface BuilderQuestion {
+  question: string;
+  options: string[];
+  /** The option the builder would pick, or null. */
+  recommended: string | null;
+}
+
 export interface BuilderDraft {
   nodes: Record<string, unknown>[];
   edges: Record<string, unknown>[];
@@ -35,6 +43,8 @@ export interface BuilderDraft {
   changes: BuilderChange[];
   issues: BuilderIssue[];
   has_errors: boolean;
+  /** Set when the builder ended its turn with a question for the person. */
+  question?: BuilderQuestion | null;
 }
 
 export interface BuilderCanvasSnapshot {
@@ -83,6 +93,8 @@ export interface BuilderDraftStatus {
   ready: boolean;
   node_count: number;
   summary: string;
+  /** A question the builder asked with ask_user, if its last turn ended with one. */
+  question?: BuilderQuestion | null;
   /** The draft in the simplified specification format, for previewing. */
   spec: {
     workflow: {
@@ -144,7 +156,8 @@ export type AssistAction =
   | "review"
   | "improve_prompt"
   | "generate_code"
-  | "optimize";
+  | "optimize"
+  | "add_step";
 
 /** An approved change is applied with `applyBuilderOperations`; nothing lands until then. */
 export interface AssistProposal {
@@ -172,12 +185,20 @@ export const runAssistAction = (
   snapshot: BuilderCanvasSnapshot,
   action: AssistAction,
   nodeIds: string[] = [],
-  instruction = ""
+  instruction = "",
+  /** For add_step: the output of the first node that the new step follows. */
+  sourceHandle?: string
 ) =>
   apiRequest<AssistResult>(
     "POST",
     `${BASE}/assist`,
-    { snapshot, action, node_ids: nodeIds, instruction } as unknown as Record<string, unknown>,
+    {
+      snapshot,
+      action,
+      node_ids: nodeIds,
+      instruction,
+      source_handle: sourceHandle ?? null,
+    } as unknown as Record<string, unknown>,
     {},
     { rethrowForbidden: true }
   );

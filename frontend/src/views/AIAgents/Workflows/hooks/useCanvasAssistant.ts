@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type ChatMessage } from "genassist-chat-react";
+import { type ChatMessage, type StreamEvent } from "genassist-chat-react";
 import { Node, Edge } from "reactflow";
 import { v4 as uuidv4 } from "uuid";
 import { useChatService, type SavedConversation } from "@/hooks/useChatService";
@@ -14,13 +14,17 @@ import {
   type BuilderDraft,
 } from "@/services/workflowBuilder";
 import {
+  applyLiveStreamEvent,
   changesAffectLayout,
   clearAiChanges,
   markAiChanges,
   mergeDraftNodes,
+  newLiveTurn,
   reportableIssues,
   serializeCanvasForDraft,
+  settleLiveTurn,
   type AssistantMessage,
+  type LiveTurn,
 } from "../utils/assistantDraft";
 
 interface UseCanvasAssistantArgs {
@@ -134,6 +138,13 @@ export function useCanvasAssistant({
   const savedChat = useMemo(() => loadSavedChat(workflowScopeId), [workflowScopeId]);
   const [messages, setMessages] = useState<AssistantMessage[]>(() => savedChat?.messages ?? []);
   const [isThinking, setIsThinking] = useState(false);
+  // The turn in progress: narrated steps, thoughts and the reply as it streams in.
+  const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
+  const liveTurnRef = useRef<LiveTurn | null>(null);
+  const updateLiveTurn = useCallback((turn: LiveTurn | null) => {
+    liveTurnRef.current = turn;
+    setLiveTurn(turn);
+  }, []);
   const [simulateActions, setSimulateActions] = useState(true);
   const [pendingChange, setPendingChange] = useState<PendingChange | null>(null);
   const suppressWelcomeRef = useRef(false);
@@ -290,16 +301,26 @@ export function useCanvasAssistant({
   }, [addAgentMessage, hydrateNodes, setCanvas]);
 
   // Read the draft after the agent's turn and bring the canvas in line with it.
+  // A question the agent asked rides on the draft too, without a revision change.
   const applyDraft = useCallback(
     async (conversationId: string, messageId: string) => {
       const draft = await getBuilderDraft(conversationId);
-      if (!draft || draft.revision <= appliedRevisionRef.current) return;
-      appliedRevisionRef.current = draft.revision;
-      applyDraftToCanvas(draft);
+      if (!draft) return;
+      const changed = draft.revision > appliedRevisionRef.current;
+      if (changed) {
+        appliedRevisionRef.current = draft.revision;
+        applyDraftToCanvas(draft);
+      }
+      const question = draft.question ?? undefined;
+      if (!changed && !question) return;
       updateMessages((prev) =>
         prev.map((msg) =>
           msg.id === messageId
-            ? { ...msg, changes: draft.changes, issues: reportableIssues(draft) }
+            ? {
+                ...msg,
+                ...(changed ? { changes: draft.changes, issues: reportableIssues(draft) } : {}),
+                ...(question ? { question } : {}),
+              }
             : msg
         )
       );
@@ -317,14 +338,19 @@ export function useCanvasAssistant({
         }
 
         setIsThinking(false);
+        // What the assistant did on the way to this reply stays with it.
+        const turn = liveTurnRef.current;
+        const work = turn ? settleLiveTurn(turn) : {};
+        const streamed = Boolean(turn && turn.text.trim());
+        updateLiveTurn(null);
 
         // Update or add the latest agent message
         const last = messagesRef.current[messagesRef.current.length - 1];
         const messageId = last?.speaker === "agent" && !last.proposals && !last.findings ? last.id : uuidv4();
         updateMessages((prev) =>
           last?.id === messageId
-            ? [...prev.slice(0, -1), { ...last, text: message.text }]
-            : [...prev, { id: messageId, speaker: "agent", text: message.text, arrivedAt: Date.now() }]
+            ? [...prev.slice(0, -1), { ...last, text: message.text, ...work, streamed }]
+            : [...prev, { id: messageId, speaker: "agent", text: message.text, arrivedAt: Date.now(), ...work, streamed }]
         );
 
         const conversationId = chatRef.current?.getConversationId?.();
@@ -337,12 +363,22 @@ export function useCanvasAssistant({
         }
       } else if (message.speaker === "special") {
         setIsThinking(false);
+        updateLiveTurn(null);
         addAgentMessage({ text: message.text });
       }
     },
     // chatRef is a stable ref from useChatService
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [applyDraft, addAgentMessage, updateMessages]
+    [applyDraft, addAgentMessage, updateMessages, updateLiveTurn]
+  );
+
+  // Progress frames of the streamed turn: narrated steps, thoughts, reply text.
+  const handleStream = useCallback(
+    (event: StreamEvent) => {
+      const current = liveTurnRef.current ?? newLiveTurn();
+      updateLiveTurn(applyLiveStreamEvent(current, event));
+    },
+    [updateLiveTurn]
   );
 
   const {
@@ -354,6 +390,7 @@ export function useCanvasAssistant({
     getConversationState,
   } = useChatService({
     onMessage: handleMessage,
+    onStream: handleStream,
     scopeId: workflowScopeId,
     resume: savedChat?.conversation ?? null,
   });
@@ -411,6 +448,7 @@ export function useCanvasAssistant({
       updateMessages((prev) => [...prev, { id: messageId, speaker: "customer", text: trimmed }]);
       beginTurn(messageId);
       setIsThinking(true);
+      updateLiveTurn(newLiveTurn());
 
       try {
         // Only suppress the welcome message when we're actually starting a new conversation;
@@ -456,6 +494,7 @@ export function useCanvasAssistant({
       } catch (err) {
         suppressWelcomeRef.current = false;
         setIsThinking(false);
+        updateLiveTurn(null);
         const errMsg =
           err instanceof Error ? err.message : "Failed to send message.";
         addAgentMessage({ text: errMsg });
@@ -463,7 +502,21 @@ export function useCanvasAssistant({
     },
     // chatRef is a stable ref from useChatService
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatSend, startConversationIfNeeded, updateMessages, addAgentMessage, snapshot, setCanvas, beginTurn]
+    [chatSend, startConversationIfNeeded, updateMessages, addAgentMessage, snapshot, setCanvas, beginTurn, updateLiveTurn]
+  );
+
+  /**
+   * Answer a question the assistant asked (one of its options, or the person's own
+   * words): the answer is recorded on the question and sent as the next message.
+   */
+  const answerQuestion = useCallback(
+    (messageId: string, answer: string) => {
+      const trimmed = answer.trim();
+      if (!trimmed) return;
+      updateMessages((prev) => prev.map((msg) => (msg.id === messageId ? { ...msg, answer: trimmed } : msg)));
+      void sendMessage(trimmed);
+    },
+    [sendMessage, updateMessages]
   );
 
   /**
@@ -486,6 +539,7 @@ export function useCanvasAssistant({
       ]);
       beginTurn(messageId);
       setIsThinking(true);
+      updateLiveTurn({ ...newLiveTurn(), steps: [{ id: "assist", kind: ACTION_STEP_KINDS[action], text: ACTION_STEPS[action], done: false }] });
       try {
         const result = await runAssistAction(snapshot(), action, nodeIds, instruction);
         if (!result) throw new Error("The assistant did not answer.");
@@ -519,9 +573,64 @@ export function useCanvasAssistant({
         addAgentMessage({ text: detail || (err instanceof Error ? err.message : "That did not work.") });
       } finally {
         setIsThinking(false);
+        updateLiveTurn(null);
       }
     },
-    [addAgentMessage, snapshot, updateMessages, beginTurn]
+    [addAgentMessage, snapshot, updateMessages, beginTurn, updateLiveTurn]
+  );
+
+  /**
+   * Add one step after a given output of a step, from a sentence ("Add with AI"
+   * on the canvas). One model call designs it; it lands at once, highlighted,
+   * and can be undone like any other change.
+   */
+  const addStepWithAi = useCallback(
+    async (sourceNodeId: string, sourceHandle: string, handleLabel: string, instruction: string) => {
+      const trimmed = instruction.trim();
+      if (!trimmed) return;
+      const sourceName = (nodesRef.current.find((n) => n.id === sourceNodeId)?.data?.name as string | undefined) ?? "this step";
+      const messageId = uuidv4();
+      updateMessages((prev) => [
+        ...prev,
+        { id: messageId, speaker: "customer", text: `Add a step after "${sourceName}" (${handleLabel}): ${trimmed}` },
+      ]);
+      beginTurn(messageId);
+      setIsThinking(true);
+      updateLiveTurn({ ...newLiveTurn(), steps: [{ id: "design", kind: "edit", text: `Designing a step after “${sourceName}”`, done: false }] });
+      try {
+        const designed = await runAssistAction(snapshot(), "add_step", [sourceNodeId], trimmed, sourceHandle);
+        if (!designed || designed.kind !== "proposals" || designed.proposals.length === 0) {
+          throw new Error("I could not work out a step for that. Try describing it differently.");
+        }
+        const proposal = designed.proposals[0];
+        updateLiveTurn({
+          ...(liveTurnRef.current ?? newLiveTurn()),
+          steps: [
+            { id: "design", kind: "edit", text: `Designing a step after “${sourceName}”`, done: true },
+            { id: "apply", kind: "edit", text: `Adding ${proposal.title.replace(/^Add /, "")}`, done: false },
+          ],
+        });
+        const result = await applyBuilderOperations(snapshot(), proposal.operations);
+        if (!result) throw new Error("The step could not be added.");
+        applyDraftToCanvas(result);
+        const failed = result.report.includes("FAILED");
+        addAgentMessage({
+          text: failed
+            ? `The step could not be added as designed:\n${result.report}`
+            : `${proposal.title.replace(/^Add /, "Added ")} after "${sourceName}". Open it to adjust the details, or tell me what to change.`,
+          changes: result.changes,
+          issues: reportableIssues(result),
+          ...settleLiveTurn(liveTurnRef.current ?? newLiveTurn()),
+        });
+      } catch (err) {
+        const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        addAgentMessage({ text: detail || (err instanceof Error ? err.message : "The step could not be added.") });
+      } finally {
+        setIsThinking(false);
+        updateLiveTurn(null);
+      }
+    },
+    [addAgentMessage, applyDraftToCanvas, beginTurn, snapshot, updateLiveTurn, updateMessages]
   );
 
   /** Apply one approved proposal; the result is highlighted and can be undone. */
@@ -557,6 +666,16 @@ export function useCanvasAssistant({
     [addAgentMessage, applyDraftToCanvas, snapshot, updateMessages]
   );
 
+  /** Thumbs up or down on a reply, kept with the chat. */
+  const reactToMessage = useCallback(
+    (messageId: string, reaction: "up" | "down" | null) => {
+      updateMessages((prev) =>
+        prev.map((msg) => (msg.id === messageId ? { ...msg, reaction: reaction ?? undefined } : msg))
+      );
+    },
+    [updateMessages]
+  );
+
   const clearHistory = useCallback(() => {
     updateMessages(() => []);
     appliedRevisionRef.current = 0;
@@ -570,8 +689,12 @@ export function useCanvasAssistant({
   return {
     messages,
     isThinking,
+    liveTurn,
     sendMessage,
+    answerQuestion,
+    reactToMessage,
     runAssist,
+    addStepWithAi,
     applyProposal,
     pendingChange,
     keepChanges,
@@ -594,4 +717,32 @@ const ACTION_LABELS: Record<AssistAction, string> = {
   improve_prompt: "Improve the prompt of",
   generate_code: "Generate",
   optimize: "Optimize",
+  add_step: "Add a step",
+};
+
+// What the trail shows while a focused action (one model call) is running.
+const ACTION_STEPS: Record<AssistAction, string> = {
+  explain_node: "Reading the step",
+  explain_group: "Reading the steps",
+  describe_workflow: "Reading the workflow",
+  explain_step: "Reading your last test run",
+  suggest_tests: "Thinking of test messages",
+  review: "Checking the workflow",
+  improve_prompt: "Rewriting the prompt",
+  generate_code: "Writing the code",
+  optimize: "Looking for improvements",
+  add_step: "Designing the step",
+};
+
+const ACTION_STEP_KINDS: Record<AssistAction, string> = {
+  explain_node: "read",
+  explain_group: "read",
+  describe_workflow: "read",
+  explain_step: "test",
+  suggest_tests: "test",
+  review: "finalize",
+  improve_prompt: "edit",
+  generate_code: "edit",
+  optimize: "lookup",
+  add_step: "edit",
 };

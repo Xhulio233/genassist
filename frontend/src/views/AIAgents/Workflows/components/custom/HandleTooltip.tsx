@@ -1,9 +1,18 @@
 import { Badge } from "@/components/badge";
-import React, { useState, useRef, useMemo } from "react";
+import { Sparkles } from "lucide-react";
+import React, { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Handle, HandleProps, Position } from "reactflow";
+import { Handle, HandleProps, Position, useReactFlow } from "reactflow";
 import { NodeCompatibility, NodeData } from "../../types/nodes";
 import { getHandlerPosition } from "../../utils/helpers";
+import { useNodeActions } from "../../context/NodeActionsContext";
+import { AddStepWithAiDialog } from "./AddStepWithAiDialog";
+
+// Outputs that carry data onward can have a step added after them with AI; tool,
+// model and sub-agent attachments are wired differently and are left alone.
+const AI_ADDABLE_COMPATIBILITY = new Set<string>(["any", "text"]);
+// Leaving the handle keeps the tooltip up just long enough to reach its button.
+const TOOLTIP_LINGER_MS = 180;
 
 interface HandleTooltipProps extends HandleProps {
   nodeId: string;
@@ -126,16 +135,41 @@ const HandleTooltipComponent: React.FC<HandleTooltipProps> = ({
 }) => {
   // Screen position of the tooltip while the handle is hovered (null = hidden).
   const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const handleRef = useRef<HTMLDivElement>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nodeActions = useNodeActions();
+  const { getNode } = useReactFlow();
+  const canAddWithAi =
+    type === "source" && !!nodeActions && AI_ADDABLE_COMPATIBILITY.has(String(compatibility ?? "any"));
+  const handleLabel = label || String(handleProps.id ?? "").replace(/^output_?/, "").replace(/_/g, " ") || "output";
+
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimer.current = setTimeout(() => setTooltipPos(null), canAddWithAi ? TOOLTIP_LINGER_MS : 0);
+  }, [cancelHide, canAddWithAi]);
+  useEffect(() => cancelHide, [cancelHide]);
+
+  const nodeName = () => {
+    const data = getNode(nodeId)?.data as { name?: unknown } | undefined;
+    return typeof data?.name === "string" && data.name ? data.name : "this step";
+  };
 
   return (
     <>
       <div
         onMouseEnter={() => {
+          cancelHide();
           const rect = handleRef.current?.getBoundingClientRect();
           if (rect) setTooltipPos({ left: rect.right + 8, top: rect.bottom + 8 });
         }}
-        onMouseLeave={() => setTooltipPos(null)}
+        onMouseLeave={scheduleHide}
       >
         <Handle
           ref={handleRef}
@@ -156,16 +190,47 @@ const HandleTooltipComponent: React.FC<HandleTooltipProps> = ({
       {tooltipPos &&
         createPortal(
           <div
-            className="pointer-events-none fixed z-50 flex flex-col gap-2 rounded bg-gray-900 p-2 font-mono text-xs text-white shadow-lg whitespace-pre"
+            className={`fixed z-50 flex flex-col gap-2 rounded-lg bg-gray-900 p-2 font-mono text-xs text-white shadow-lg whitespace-pre ${
+              canAddWithAi ? "pointer-events-auto" : "pointer-events-none"
+            }`}
             style={tooltipPos}
+            onMouseEnter={cancelHide}
+            onMouseLeave={scheduleHide}
           >
             <Badge style={{ background: getCompatibilityColor(compatibility) }}>
               {compatibility}
             </Badge>
             {getCompatibilityDescription(compatibility, type, handleProps.id, label)}
+            {canAddWithAi && (
+              <button
+                type="button"
+                className="nodrag nopan mt-0.5 inline-flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1 font-sans text-[11px] font-medium text-white transition-colors hover:bg-[hsl(var(--brand-600))]"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  cancelHide();
+                  setTooltipPos(null);
+                  setDialogOpen(true);
+                }}
+              >
+                <Sparkles className="h-3 w-3" />
+                Add a step with AI
+              </button>
+            )}
           </div>,
           document.body
         )}
+      {canAddWithAi && dialogOpen && (
+        <AddStepWithAiDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          nodeName={nodeName()}
+          handleLabel={handleLabel}
+          onSubmit={(instruction) =>
+            nodeActions?.addStepWithAi(nodeId, String(handleProps.id ?? "output"), handleLabel, instruction)
+          }
+        />
+      )}
     </>
   );
 };

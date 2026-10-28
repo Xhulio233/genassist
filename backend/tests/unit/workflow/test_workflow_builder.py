@@ -1537,3 +1537,178 @@ def test_bare_placeholders_in_a_tool_config_become_declared_parameters():
     assert api2["data"]["parameters"] == {"lat": "{{source.latitude}}", "lon": "{{source.longitude}}", "msg": "{{source.message}}"}
     tool2 = [n for n in draft.nodes if n["type"] == "toolBuilderNode"][-1]
     assert list(tool2["data"]["inputSchema"]) == ["latitude", "longitude"]
+
+
+# ── Narration, questions, add_step ────────────────────────────────────────
+
+
+def test_tool_calls_are_narrated_as_steps_on_a_streamed_turn(monkeypatch):
+    """Each builder tool call becomes a start/end step frame in plain words, named after the step it touches."""
+    import contextvars
+
+    from app.core import turn_stream
+    from app.modules.workflow.builder import tools
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    draft.add_node("agentNode", "Support Agent", {"systemPrompt": "Help."}, connect_from="n1")
+    store = {"t": json.dumps(draft.to_dict())}
+
+    async def fake_load(thread_id):
+        return WorkflowDraft.from_dict(json.loads(store[thread_id])) if thread_id in store else None
+
+    async def fake_save(thread_id, draft):
+        store[thread_id] = json.dumps(draft.to_dict())
+
+    monkeypatch.setattr(tools, "load_draft", fake_load)
+    monkeypatch.setattr(tools, "save_draft", fake_save)
+
+    async def scenario():
+        stream = turn_stream.TurnStream("conv")
+        turn_stream.current_stream.set(stream)
+        await tools.run_tool("t", "get_node", {"node_id": "n2"})
+        await tools.run_tool("t", "apply_plan", {"operations": json.dumps([
+            {"op": "add_node", "id": "$out", "node_type": "chatOutputNode", "name": "Reply", "connect_from": "n2"},
+        ])})
+        await tools.run_tool("t", "set_node_field", {"node_id": "n2", "field": "systemPrompt", "value": "Help politely."})
+        frames = []
+        while not stream.queue.empty():
+            frames.append(stream.queue.get_nowait())
+        return frames
+
+    frames = contextvars.copy_context().run(lambda: asyncio.run(scenario()))
+    events = [json.loads(f.split("data: ", 1)[1]) for f in frames if f.startswith("event: step")]
+    texts = [(e["phase"], e["text"], e["detail"]) for e in events]
+    assert texts == [
+        ("start", "Reading “Support Agent”", ""),
+        ("end", "Reading “Support Agent”", ""),
+        ("start", "Adding “Reply”", ""),
+        ("end", "Adding “Reply”", "1 of 1 applied"),
+        ("start", "Writing the prompt of “Support Agent”", ""),
+        ("end", "Writing the prompt of “Support Agent”", ""),
+    ]
+    assert {e["kind"] for e in events} == {"read", "edit"}
+    # Outside a streamed turn nothing is emitted and nothing breaks.
+    turn_stream.current_stream.set(None)
+    assert "Support Agent" in asyncio.run(tools.run_tool("t", "get_node", {"node_id": "n2"}))
+
+
+def test_narration_describes_plans_and_outcomes():
+    from app.modules.workflow.builder import narration
+
+    assert narration.describe_plan(json.dumps([
+        {"op": "add_node", "name": "Classifier"}, {"op": "add_node", "name": "Router"},
+        {"op": "connect"}, {"op": "set_node_field"},
+    ])) == "Adding “Classifier” and “Router”, changing 1 step and connecting them"
+    assert narration.describe_plan([{"op": "add_node"}] * 3 + [{"op": "remove_node"}]) == "Adding 3 steps and removing 1 step"
+    assert narration.describe_plan("not json") == "Applying changes"
+    assert narration.describe_call("test_workflow", {"message": "x" * 100})[1].startswith("Testing with “xxxx")
+    assert narration.describe_call("search_web", {"query": "acme pricing"}) == ("search", "Searching the web for “acme pricing”")
+    assert narration.describe_outcome("apply_plan", "Applied 5 of 7 operations. 2 failed") == "5 of 7 applied, 2 failed"
+    assert narration.describe_outcome("search_web", "1. A\n   url\n2. B\n   url") == "2 results"
+    assert narration.describe_outcome("set_node_field", "ERROR: no such field") == "Rejected: no such field"
+    assert narration.describe_outcome("finalize_workflow", "Workflow finalized. Tell the user") == "Finalized"
+
+
+def test_ask_user_records_a_question_the_canvas_shows_as_options(monkeypatch):
+    """ask_user stores the question on the draft (no revision change) and tells the agent to stop and ask."""
+    from app.modules.workflow.builder import tools
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    store = {"t": json.dumps(draft.to_dict())}
+    revision = draft.revision
+
+    async def fake_load(thread_id):
+        return WorkflowDraft.from_dict(json.loads(store[thread_id]))
+
+    async def fake_save(thread_id, draft):
+        store[thread_id] = json.dumps(draft.to_dict())
+
+    monkeypatch.setattr(tools, "load_draft", fake_load)
+    monkeypatch.setattr(tools, "save_draft", fake_save)
+
+    result = asyncio.run(tools.run_tool("t", "ask_user", {
+        "question": "  What should happen when nobody is available? ",
+        "options": json.dumps(["Email the customer", "Open a ticket", "open a ticket", "Do nothing"]),
+        "recommended": "open a Ticket",
+    }))
+    assert "End your turn now" in result and "Do not list the options" in result
+    saved = WorkflowDraft.from_dict(json.loads(store["t"]))
+    assert saved.revision == revision
+    assert saved.question == {
+        "question": "What should happen when nobody is available?",
+        "options": ["Email the customer", "Open a ticket", "Do nothing"],
+        "recommended": "Open a ticket",
+    }
+    assert saved.client_payload()["question"] == saved.question
+    # The next turn starts from the canvas, which carries no question.
+    fresh = WorkflowDraft.from_canvas(saved.nodes, saved.edges, previous=saved)
+    assert fresh.question is None and fresh.client_payload()["question"] is None
+
+    assert asyncio.run(tools.run_tool("t", "ask_user", {"question": "Only one?", "options": '["Yes"]'})).startswith("ERROR:")
+    assert asyncio.run(tools.run_tool("t", "ask_user", {"question": "", "options": '["a", "b"]'})).startswith("ERROR:")
+    # A pipe-separated list is accepted too; an unknown recommendation is simply dropped.
+    assert "End your turn" in asyncio.run(tools.run_tool("t", "ask_user", {"question": "Which?", "options": "A | B", "recommended": "C"}))
+    assert WorkflowDraft.from_dict(json.loads(store["t"])).question == {"question": "Which?", "options": ["A", "B"], "recommended": None}
+
+
+def test_add_step_proposes_one_node_connected_from_the_chosen_output(monkeypatch):
+    from app.modules.workflow.builder import assist
+
+    asked = []
+
+    async def fake_ask(system, user, provider_id=None):
+        asked.append(user)
+        if "between" in user:
+            return json.dumps({
+                "op": "add_node", "node_type": "llmModelNode", "name": "Summarize the request",
+                "system_prompt": "Summarize the customer's message in one sentence.", "connect_to": "n3",
+                "id": "$ignored", "connect_from": "n9",
+            })
+        return "```json\n" + json.dumps({"op": "add_node", "node_type": "templateNode", "name": "Thanks", "config": {"template": "Thanks!"}}) + "\n```"
+
+    monkeypatch.setattr(assist, "_ask", fake_ask)
+
+    draft = WorkflowDraft()
+    draft.add_node("chatInputNode", "Start")
+    draft.add_node("agentNode", "Agent", {"systemPrompt": "Help."}, connect_from="n1")
+    draft.add_node("chatOutputNode", "Reply", connect_from="n2")
+    agent_id = draft.find("n2")["id"]
+
+    # Between the agent and its reply: the model's connect_to is kept, its own ids are overridden.
+    result = asyncio.run(assist.run_action(draft, "add_step", [agent_id], "summarize what the customer asked"))
+    assert result["kind"] == "proposals"
+    [proposal] = result["proposals"]
+    assert proposal["title"] == 'Add "Summarize the request"'
+    assert proposal["operations"] == [{
+        "op": "add_node", "id": "$new", "node_type": "llmModelNode", "name": "Summarize the request",
+        "connect_from": "n2", "system_prompt": "Summarize the customer's message in one sentence.", "connect_to": "n3",
+    }]
+    assert "currently leads to" in asked[0] and "summarize what the customer asked" in asked[0]
+    # Applying it inserts the step between the two.
+    from app.modules.workflow.builder.tools import apply_plan
+
+    report = apply_plan(draft, proposal["operations"])
+    assert "FAILED" not in report
+    new_node = draft.find("Summarize the request")
+    assert any(e["source"] == agent_id and e["target"] == new_node["id"] for e in draft.edges)
+    assert any(e["source"] == new_node["id"] and e["target"] == draft.find("n3")["id"] for e in draft.edges)
+    assert not any(e["source"] == agent_id and e["target"] == draft.find("n3")["id"] for e in draft.edges)
+
+    # A branching node names the output; a bad output is refused; an empty instruction too.
+    draft2 = WorkflowDraft()
+    draft2.add_node("chatInputNode", "Start")
+    draft2.add_node("switchNode", "Router", {
+        "switchValue": "{{session.message}}", "cases": [{"id": "case_1", "label": "Billing", "value": "billing"}],
+    }, connect_from="n1")
+    switch_id = draft2.find("n2")["id"]
+    outputs = catalog.handle_ids("switchNode", draft2.find("n2")["data"], "source")
+    assert len(outputs) > 1
+    result = asyncio.run(assist.run_action(draft2, "add_step", [switch_id], "thank them", source_handle=outputs[-1]))
+    assert result["proposals"][0]["operations"][0]["connect_from"] == f"n2.{outputs[-1]}"
+    assert "leads nowhere yet" in asked[-1]
+    with pytest.raises(ValueError):
+        asyncio.run(assist.run_action(draft2, "add_step", [switch_id], "thank them", source_handle="output_nope"))
+    with pytest.raises(ValueError):
+        asyncio.run(assist.run_action(draft2, "add_step", [switch_id], "   "))

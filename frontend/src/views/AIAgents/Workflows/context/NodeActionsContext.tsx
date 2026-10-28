@@ -35,6 +35,11 @@ export interface NodeActionsContextValue {
   fixNodeWithAi: (id: string, problem: string) => void;
   /** A focused AI action on a group's nodes (explain, optimize). */
   assistGroup: (groupId: string, action: "explain_group" | "optimize") => void;
+  /**
+   * "Add with AI" on an output handle: one new step after that output, designed
+   * from a sentence. `handleLabel` is the output's name as the tooltip shows it.
+   */
+  addStepWithAi: (nodeId: string, handleId: string, handleLabel: string, instruction: string) => void;
 }
 
 export const NodeActionsContext = createContext<NodeActionsContextValue | null>(

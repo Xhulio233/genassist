@@ -1,10 +1,47 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import {
+  BookOpen,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  Copy,
+  FlaskConical,
+  Globe,
+  Lightbulb,
+  Loader2,
+  PencilLine,
+  Plus,
+  Pencil,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+  Volume2,
+} from "lucide-react";
+
+import { cn } from "@/helpers/utils";
+import type { BuilderChange } from "@/services/workflowBuilder";
+import {
+  changeKind,
+  describeWork,
+  type AssistantStep,
+  type LiveTurn,
+} from "@/views/AIAgents/Workflows/utils/assistantDraft";
+
+const CHANGE_BADGE = {
+  add: "bg-green-50 text-green-700 border-green-200 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30",
+  update: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/30",
+  remove: "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30",
+};
 
 /**
- * Motion for the assistant chat: the "thinking" indicator while a reply is on
- * its way, and a typewriter reveal for a reply that has just arrived.
- * Both respect the reduced-motion preference.
+ * Motion for the assistant chat: the reasoning trail while a reply is on its
+ * way (what the assistant is doing, in its own words, as it happens), the
+ * collapsed trail kept under a finished reply, and a typewriter reveal for a
+ * reply that arrived whole. All respect the reduced-motion preference.
  */
 
 const prefersReducedMotion = () =>
@@ -12,38 +49,247 @@ const prefersReducedMotion = () =>
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-// What the indicator says as the wait grows; nothing here claims a step the agent may not be taking.
-const THINKING_PHASES: Array<[number, string]> = [
-  [0, "Thinking"],
-  [4000, "Working on it"],
-  [12000, "Still working"],
-  [30000, "This one takes a while"],
-];
+const STEP_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  read: BookOpen,
+  lookup: BookOpen,
+  search: Globe,
+  edit: PencilLine,
+  test: FlaskConical,
+  finalize: ShieldCheck,
+  question: CircleHelp,
+  thought: Lightbulb,
+};
 
-export const ThinkingIndicator: React.FC = () => {
-  const [elapsed, setElapsed] = useState(0);
+const useElapsed = (since: number, running: boolean) => {
+  const [elapsed, setElapsed] = useState(() => Date.now() - since);
   useEffect(() => {
-    const started = Date.now();
-    const timer = setInterval(() => setElapsed(Date.now() - started), 1000);
+    if (!running) return;
+    const timer = setInterval(() => setElapsed(Date.now() - since), 1000);
     return () => clearInterval(timer);
-  }, []);
-  const label = [...THINKING_PHASES].reverse().find(([after]) => elapsed >= after)?.[1] ?? "Thinking";
-  return (
-    <div className="flex gap-2.5" role="status" aria-live="polite" aria-label={`${label}…`}>
-      <div className="flex-shrink-0 mt-1">
-        <div className="relative h-6 w-6 rounded-full bg-[hsl(var(--brand-50))] flex items-center justify-center">
-          <span className="ai-thinking-ring absolute inset-0 rounded-full" aria-hidden />
-          <Sparkles className="ai-thinking-spark h-3.5 w-3.5 text-[hsl(var(--brand-600))]" />
-        </div>
-      </div>
-      <div className="flex items-center gap-1.5 text-sm">
-        <span className="ai-shimmer-text">{label}</span>
-        <span className="ai-typing-dots" aria-hidden>
-          <span />
-          <span />
-          <span />
+  }, [since, running]);
+  return elapsed;
+};
+
+const formatSeconds = (ms: number) => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+};
+
+const StepRow: React.FC<{ step: AssistantStep; live: boolean }> = ({ step, live }) => {
+  const Icon = STEP_ICONS[step.kind] ?? Sparkles;
+  const running = live && !step.done;
+  if (step.kind === "thought") {
+    return (
+      <li className="ai-step-in flex gap-2.5">
+        <span className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center text-amber-500">
+          <Lightbulb className="h-3.5 w-3.5" />
         </span>
-      </div>
+        <p className="min-w-0 whitespace-pre-wrap text-[13px] leading-5 text-muted-foreground">{step.text}</p>
+      </li>
+    );
+  }
+  return (
+    <li className="ai-step-in flex items-start gap-2.5">
+      <span
+        className={cn(
+          "mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center",
+          running ? "text-[hsl(var(--brand-600))]" : "text-muted-foreground"
+        )}
+      >
+        {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+      </span>
+      <span className="min-w-0 text-[13px] leading-5">
+        <span className={cn(running ? "ai-shimmer-text" : "text-foreground")}>{step.text}</span>
+        {step.detail && (
+          <span
+            className={cn(
+              "ml-1.5 inline-flex items-center gap-1 text-xs",
+              /fail|reject|stopped|not /i.test(step.detail) ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+            )}
+          >
+            {!/fail|reject|stopped|not /i.test(step.detail) && <Check className="h-3 w-3" />}
+            {step.detail}
+          </span>
+        )}
+      </span>
+    </li>
+  );
+};
+
+/**
+ * The turn in progress: "Thinking · 3s" with a disclosure that lists what the
+ * assistant is doing as it happens, and the reply text as it streams in below.
+ */
+export const ReasoningTrail: React.FC<{ turn: LiveTurn | null }> = ({ turn }) => {
+  const startedAt = turn?.startedAt ?? Date.now();
+  const elapsed = useElapsed(startedAt, true);
+  const steps = turn?.steps ?? [];
+  const text = turn?.text ?? "";
+  const [open, setOpen] = useState(true);
+  const listRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    listRef.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
+  }, [steps.length]);
+
+  return (
+    <div className="space-y-2" role="status" aria-live="polite">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        disabled={steps.length === 0}
+        className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-default"
+      >
+        <span className="ai-shimmer-text">Thinking</span>
+        <span>· {formatSeconds(elapsed)}</span>
+        {steps.length > 0 && (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />)}
+      </button>
+      {open && steps.length > 0 && (
+        <ul ref={listRef} className="ml-1 max-h-64 space-y-1.5 overflow-y-auto border-l-2 border-border/70 py-0.5 pl-3 pr-1">
+          {steps.map((step) => (
+            <StepRow key={step.id} step={step} live />
+          ))}
+        </ul>
+      )}
+      {text.trim() && (
+        <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+          {text}
+          <span className="ai-caret" aria-hidden />
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Above a finished reply: "Finished thinking" with a disclosure that unfolds the
+ * steps the assistant took, its thoughts, and what it changed on the canvas.
+ */
+export const WorkSummary: React.FC<{ steps?: AssistantStep[]; workedMs?: number; changes?: BuilderChange[] }> = ({
+  steps,
+  workedMs,
+  changes,
+}) => {
+  const [open, setOpen] = useState(false);
+  const summary = describeWork(steps, workedMs, changes);
+  if (!summary) return null;
+  return (
+    <div className="mb-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        title={summary}
+        className="inline-flex items-center gap-1.5 py-0.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        Finished thinking
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </button>
+      {open && (
+        <div className="ml-1 mt-1 space-y-2 border-l-2 border-border/70 py-0.5 pl-3">
+          {steps && steps.length > 0 && (
+            <ul className="space-y-1.5">
+              {steps.map((step) => (
+                <StepRow key={step.id} step={step} live={false} />
+              ))}
+            </ul>
+          )}
+          {changes && changes.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {changes.map((change, index) => {
+                const kind = changeKind(change);
+                const Icon = kind === "add" ? Plus : kind === "update" ? Pencil : Trash2;
+                return (
+                  <span
+                    key={`${change.op}-${index}`}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${CHANGE_BADGE[kind]}`}
+                  >
+                    <Icon className="h-3 w-3" />
+                    {change.summary}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">{summary}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** Under a reply: copy it, hear it read aloud, and say whether it was helpful. */
+export const MessageActions: React.FC<{
+  text: string;
+  reaction?: "up" | "down";
+  onReact?: (reaction: "up" | "down" | null) => void;
+}> = ({ text, reaction, onReact }) => {
+  const [copied, setCopied] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access can be refused; nothing to do.
+    }
+  };
+  const speak = () => {
+    if (!canSpeak) return;
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    setSpeaking(true);
+  };
+  useEffect(() => () => {
+    if (speaking && canSpeak) window.speechSynthesis.cancel();
+  }, [speaking, canSpeak]);
+
+  const button = "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
+  return (
+    <div className="mt-2 flex items-center gap-0.5">
+      <button type="button" onClick={copy} className={button} title={copied ? "Copied" : "Copy"} aria-label="Copy reply">
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      {canSpeak && (
+        <button type="button" onClick={speak} className={cn(button, speaking && "text-foreground")} title={speaking ? "Stop" : "Read aloud"} aria-label={speaking ? "Stop reading" : "Read aloud"}>
+          {speaking ? <Square className="h-3 w-3" /> : <Volume2 className="h-3.5 w-3.5" />}
+        </button>
+      )}
+      {onReact && (
+        <>
+          <button
+            type="button"
+            onClick={() => onReact(reaction === "up" ? null : "up")}
+            className={cn(button, reaction === "up" && "text-foreground")}
+            aria-pressed={reaction === "up"}
+            title="Good reply"
+            aria-label="Good reply"
+          >
+            <ThumbsUp className={cn("h-3.5 w-3.5", reaction === "up" && "fill-current")} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onReact(reaction === "down" ? null : "down")}
+            className={cn(button, reaction === "down" && "text-foreground")}
+            aria-pressed={reaction === "down"}
+            title="Bad reply"
+            aria-label="Bad reply"
+          >
+            <ThumbsDown className={cn("h-3.5 w-3.5", reaction === "down" && "fill-current")} />
+          </button>
+        </>
+      )}
     </div>
   );
 };

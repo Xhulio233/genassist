@@ -277,6 +277,86 @@ async def optimize(draft: WorkflowDraft, node_ids: Optional[List[str]] = None) -
     return proposals[:4]
 
 
+ADD_STEP_SYSTEM = (
+    "You add one step to an AI workflow built on a canvas, for a person who is not an engineer. "
+    "Reply with one JSON object only, an add_node operation: {\"op\":\"add_node\",\"id\":\"$new\","
+    "\"node_type\":string,\"name\":string,\"system_prompt\"?:string,\"config\"?:object,\"connect_to\"?:string}. "
+    "Choose the one node type that does what is asked. A language model step (llmModelNode, brief in "
+    "system_prompt, replies plain text) understands or writes text; an agentNode holds a conversation "
+    "and uses tools; pythonCodeNode handles exact data (code defines executable_function(params)); "
+    "templateNode is fixed text (config {\"template\": ...}, variables as {{source}}); chatOutputNode "
+    "sends the reply to the user; switchNode routes on a value. Give the step a short name as it "
+    "will appear on the canvas and sensible settings; a prompt is a full brief. Node types, by "
+    "category:\n" + catalog.compact_index()
+)
+
+
+async def add_step(
+    draft: WorkflowDraft, source_node_id: str, source_handle: Optional[str], instruction: str
+) -> Dict[str, Any]:
+    """
+    One new step after a given output of a step, from a sentence. The result is a
+    proposal the canvas applies at once; the new step is connected from that output
+    and, when it belongs in between, to what the output already led to.
+    """
+    if not instruction.strip():
+        raise ValueError("Describe what the new step should do.")
+    node = draft.find(source_node_id)
+    data = node.get("data") or {}
+    alias = draft.alias(node["id"])
+    outputs = catalog.handle_ids(node["type"], data, "source")
+    handle = (source_handle or "").strip() or (outputs[0] if outputs else "output")
+    if outputs and handle not in outputs:
+        raise ValueError(f"\"{data.get('name', '')}\" has no output \"{handle}\".")
+    label = next(
+        (h.get("label") for h in catalog.handlers_for(node["type"], data) if h.get("id") == handle), None
+    ) or handle.replace("output_", "").replace("_", " ")
+    downstream = [
+        e["target"] for e in draft.edges
+        if e["source"] == node["id"] and (e.get("sourceHandle") or (outputs[0] if outputs else "output")) == handle
+    ]
+    downstream_aliases = {draft.alias(t): t for t in downstream}
+    leads_to = (
+        f"That output currently leads to {_names(draft, downstream)} ({', '.join(downstream_aliases)}). "
+        "If the new step belongs between them, set connect_to to that step's id; if it is a new branch "
+        "that replies on its own, leave connect_to out.\n\n"
+        if downstream
+        else "That output leads nowhere yet.\n\n"
+    )
+    user = (
+        f"Workflow outline:\n{draft.render_outline()}\n\n"
+        f"The step it comes after, in full:\n{draft.render_node(alias)}\n\n"
+        f"The new step follows \"{data.get('name', '')}\" from its output \"{label}\". {leads_to}"
+        f"What the person wants the new step to do: {instruction.strip()}\n\n"
+        "Reply with the add_node object only."
+    )
+    text = await _ask(ADD_STEP_SYSTEM, user)
+    try:
+        parsed = _parse_json(text)
+    except Exception:
+        raise ValueError("I could not work out a step for that. Try describing it differently.")
+    if isinstance(parsed, list):
+        parsed = next((item for item in parsed if isinstance(item, dict)), None)
+    if not isinstance(parsed, dict) or not catalog.is_known(str(parsed.get("node_type") or "")):
+        raise ValueError("I could not work out a step for that. Try describing it differently.")
+    name = " ".join(str(parsed.get("name") or catalog.label(parsed["node_type"])).split())[:60]
+    operation: Dict[str, Any] = {
+        "op": "add_node",
+        "id": "$new",
+        "node_type": parsed["node_type"],
+        "name": name,
+        "connect_from": f"{alias}.{handle}" if outputs and len(outputs) > 1 else alias,
+    }
+    if isinstance(parsed.get("system_prompt"), str) and parsed["system_prompt"].strip():
+        operation["system_prompt"] = parsed["system_prompt"]
+    if isinstance(parsed.get("config"), dict):
+        operation["config"] = parsed["config"]
+    connect_to = str(parsed.get("connect_to") or "").strip()
+    if connect_to in downstream_aliases:
+        operation["connect_to"] = connect_to
+    return _proposal(f"Add \"{name}\"", f"After \"{data.get('name', '')}\": {instruction.strip()[:120]}", [operation])
+
+
 # ── Review: deterministic checks, each with a fix the canvas can request ──
 
 
@@ -336,7 +416,7 @@ def review(draft: WorkflowDraft) -> List[Dict[str, Any]]:
 # ── Dispatch ───────────────────────────────────────────────────────────────
 
 READ_ACTIONS = {"explain_node", "explain_group", "describe_workflow", "explain_step", "suggest_tests", "review"}
-PROPOSAL_ACTIONS = {"improve_prompt", "generate_code", "optimize"}
+PROPOSAL_ACTIONS = {"improve_prompt", "generate_code", "optimize", "add_step"}
 ACTIONS = READ_ACTIONS | PROPOSAL_ACTIONS
 
 
@@ -345,6 +425,7 @@ async def run_action(
     action: str,
     node_ids: Optional[List[str]] = None,
     instruction: str = "",
+    source_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     node_ids = [n for n in (node_ids or []) if n]
     first = node_ids[0] if node_ids else None
@@ -366,4 +447,6 @@ async def run_action(
         return {"kind": "proposals", "proposals": [await generate_code(draft, first, instruction)]}
     if action == "optimize":
         return {"kind": "proposals", "proposals": await optimize(draft, node_ids or None)}
+    if action == "add_step":
+        return {"kind": "proposals", "proposals": [await add_step(draft, first, source_handle, instruction)]}
     raise ValueError(f"Unknown action '{action}'. Use one of: {', '.join(sorted(ACTIONS))}.")
